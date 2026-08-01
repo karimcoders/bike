@@ -1,36 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
-import { getStorageRoot } from "@/lib/storage";
 
 // =====================================================================
 // GET /api/uploads/<folder>/<filename>
 // ---------------------------------------------------------------------
-// Serves uploaded image files from the storage directory.
+// Serves uploaded image files from LOCAL storage (dev only).
 //
-// - Locally: /public/uploads/<folder>/<filename>
-// - On Railway (with volume): /data/uploads/<folder>/<filename>
+// On Vercel/production: Cloudinary is used, so uploaded files have URLs
+// like https://res.cloudinary.com/... and this route is NOT needed.
 //
-// The storage root is auto-detected by lib/storage.ts based on env:
-//   - RAILWAY_VOLUME_MOUNT_DIR (set by Railway when volume attached)
-//   - STORAGE_DIR (manual override for other platforms)
-//   - process.cwd() (default for local dev)
+// Locally: /public/uploads/<folder>/<filename>
 //
-// WHY THIS EXISTS:
-//   Files in /public/ are normally served as static files by Next.js
-//   at the root path (e.g. /uploads/products/x.png). However, when the
-//   app is accessed through a preview panel / reverse proxy, static
-//   file paths like /uploads/... may NOT be proxied correctly (the
-//   proxy might only forward /api/* requests). This route ensures
-//   uploaded images are served through the SAME /api/* routing that
-//   all other data requests use, so they work regardless of proxy
-//   configuration.
-//
-// SECURITY:
-//   - Path is validated to prevent directory traversal (.. is rejected)
-//   - Only files inside the uploads root are served
-//   - MIME types are whitelisted (images only)
+// This route is kept for local dev backward-compat. It dynamically
+// imports `fs` so Vercel's serverless build doesn't fail on the
+// read-only filesystem restriction.
 // =====================================================================
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const MIME_MAP: Record<string, { mime: string; ext: string }> = {
   png: { mime: "image/png", ext: "png" },
@@ -39,8 +25,6 @@ const MIME_MAP: Record<string, { mime: string; ext: string }> = {
   webp: { mime: "image/webp", ext: "webp" },
   gif: { mime: "image/gif", ext: "gif" },
 };
-
-export const runtime = "nodejs";
 
 export async function GET(
   _req: NextRequest,
@@ -56,7 +40,6 @@ export async function GET(
     );
   }
 
-  // Reject any segment containing ".." or starting with "/"
   for (const seg of segments) {
     if (seg.includes("..") || seg.startsWith("/")) {
       return NextResponse.json(
@@ -66,20 +49,35 @@ export async function GET(
     }
   }
 
-  // ---- Determine file location (auto-detects Railway volume vs local) ----
+  // ---- Determine file location (local dev only) ----
   const relativePath = segments.join("/");
-  const storageRoot = getStorageRoot();
-  // On Railway/with STORAGE_DIR: <storageRoot>/uploads/<folder>/<file>
-  // Locally: <cwd>/public/uploads/<folder>/<file>
   const hasVolume = Boolean(
     process.env.RAILWAY_VOLUME_MOUNT_DIR || process.env.STORAGE_DIR
   );
+
+  // On Vercel/production without volume, local file serving is unavailable
+  if (process.env.VERCEL && !hasVolume) {
+    return NextResponse.json(
+      {
+        error:
+          "Local file serving not available on Vercel. Use Cloudinary for uploads.",
+        path: relativePath,
+      },
+      { status: 404 }
+    );
+  }
+
+  // Dynamically import fs & path to avoid Vercel build issues
+  const { promises: fs } = await import("fs");
+  const path = await import("path");
+  const { getStorageRoot } = await import("@/lib/storage");
+
+  const storageRoot = getStorageRoot();
   const uploadsRoot = hasVolume
     ? path.join(storageRoot, "uploads")
     : path.join(storageRoot, "public", "uploads");
   const fullPath = path.join(uploadsRoot, ...segments);
 
-  // Ensure the resolved path is still inside the uploads root
   if (!fullPath.startsWith(uploadsRoot)) {
     return NextResponse.json(
       { error: "Access denied" },
@@ -87,7 +85,6 @@ export async function GET(
     );
   }
 
-  // ---- Check file exists ----
   try {
     await fs.access(fullPath);
   } catch {
@@ -97,7 +94,6 @@ export async function GET(
     );
   }
 
-  // ---- Determine MIME from extension ----
   const ext = path.extname(fullPath).slice(1).toLowerCase();
   const mimeInfo = MIME_MAP[ext];
   if (!mimeInfo) {
@@ -107,7 +103,6 @@ export async function GET(
     );
   }
 
-  // ---- Read and serve ----
   try {
     const fileBuffer = await fs.readFile(fullPath);
     return new NextResponse(fileBuffer, {
