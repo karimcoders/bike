@@ -1,65 +1,91 @@
-import ZAI from "z-ai-web-dev-sdk";
 import { promises as fs } from "fs";
 import path from "path";
 import os from "os";
 import { db } from "./db";
 
 // =====================================================================
-// ZAI SDK Configuration
+// ZAI API Configuration (Vercel-compatible)
 // ---------------------------------------------------------------------
-// The z-ai-web-dev-sdk reads its config from a .z-ai-config JSON file
-// (searched in cwd, home dir, /etc). In the dev sandbox this file is
-// pre-provisioned at /etc/.z-ai-config.
+// Reads ZAI credentials from environment variables FIRST, then falls
+// back to the .z-ai-config file (for local sandbox dev).
 //
-// For production deployments (Railway, Vercel, etc.) where we can't
-// ship a config file, we support env vars as a fallback:
-//   ZAI_API_KEY  — the API key
-//   ZAI_BASE_URL — the base URL (defaults to https://api.z.ai/v1)
+// Required env vars (for Vercel/production):
+//   ZAI_API_KEY  — API key (e.g. "Z.ai")
+//   ZAI_BASE_URL — base URL (e.g. "https://internal-api.z.ai/v1")
+//   ZAI_TOKEN    — session JWT token
+//   ZAI_CHAT_ID  — chat ID (optional but recommended)
+//   ZAI_USER_ID  — user ID (optional but recommended)
 //
-// If .z-ai-config doesn't exist but ZAI_API_KEY is set, we auto-create
-// a config file in the project root so the SDK can find it.
+// In the dev sandbox, /etc/.z-ai-config is pre-provisioned and will
+// be used automatically if env vars are not set.
 // =====================================================================
 
-async function ensureZAIConfig(): Promise<void> {
+type ZAIConfig = {
+  baseUrl: string;
+  apiKey: string;
+  token?: string;
+  chatId?: string;
+  userId?: string;
+};
+
+let _cachedConfig: ZAIConfig | null = null;
+
+export async function loadZAIConfig(): Promise<ZAIConfig> {
+  if (_cachedConfig) return _cachedConfig;
+
+  // ---- 1. Try env vars first (Vercel/production) ----
+  if (process.env.ZAI_API_KEY && process.env.ZAI_BASE_URL) {
+    _cachedConfig = {
+      baseUrl: process.env.ZAI_BASE_URL,
+      apiKey: process.env.ZAI_API_KEY,
+      token: process.env.ZAI_TOKEN,
+      chatId: process.env.ZAI_CHAT_ID,
+      userId: process.env.ZAI_USER_ID,
+    };
+    return _cachedConfig;
+  }
+
+  // ---- 2. Fall back to .z-ai-config file (local sandbox) ----
   const configPaths = [
     path.join(process.cwd(), ".z-ai-config"),
     path.join(os.homedir(), ".z-ai-config"),
     "/etc/.z-ai-config",
   ];
 
-  // Check if any existing config file is valid
   for (const p of configPaths) {
     try {
       const content = await fs.readFile(p, "utf-8");
       const cfg = JSON.parse(content);
-      if (cfg.baseUrl && cfg.apiKey) return; // valid config exists
+      if (cfg.baseUrl && cfg.apiKey) {
+        _cachedConfig = {
+          baseUrl: cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          token: cfg.token,
+          chatId: cfg.chatId,
+          userId: cfg.userId,
+        };
+        return _cachedConfig;
+      }
     } catch {
       // file doesn't exist or is invalid — continue
     }
   }
 
-  // No valid config file found — try to create one from env vars
-  const apiKey = process.env.ZAI_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "ZAI configuration missing. Either create a .z-ai-config file with {baseUrl, apiKey} or set ZAI_API_KEY environment variable."
-    );
-  }
-
-  const baseUrl = process.env.ZAI_BASE_URL || "https://api.z.ai/v1";
-  const config = JSON.stringify({ baseUrl, apiKey });
-  const targetPath = path.join(process.cwd(), ".z-ai-config");
-  await fs.writeFile(targetPath, config, "utf-8");
+  throw new Error(
+    "ZAI configuration missing. Set ZAI_API_KEY + ZAI_BASE_URL + ZAI_TOKEN env vars, or create .z-ai-config file."
+  );
 }
 
-// Singleton ZAI instance
-let _zai: Awaited<ReturnType<typeof ZAI.create>> | null = null;
-export async function getZAI() {
-  if (!_zai) {
-    await ensureZAIConfig();
-    _zai = await ZAI.create();
-  }
-  return _zai;
+function buildHeaders(cfg: ZAIConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${cfg.apiKey}`,
+    "X-Z-AI-From": "Z",
+  };
+  if (cfg.chatId) headers["X-Chat-Id"] = cfg.chatId;
+  if (cfg.userId) headers["X-User-Id"] = cfg.userId;
+  if (cfg.token) headers["X-Token"] = cfg.token;
+  return headers;
 }
 
 // ---- Chat completion helper ----
@@ -68,17 +94,29 @@ export async function chat(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  const zai = await getZAI();
+  const cfg = await loadZAIConfig();
   const messages: { role: string; content: string }[] = [
     { role: "assistant", content: systemPrompt },
     ...(opts?.history || []),
     { role: "user", content: userMessage },
   ];
-  const completion = await zai.chat.completions.create({
-    messages: messages as any,
-    thinking: { type: "disabled" },
+
+  const response = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: buildHeaders(cfg),
+    body: JSON.stringify({
+      messages,
+      thinking: { type: "disabled" },
+    }),
   });
-  return completion.choices[0]?.message?.content || "";
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`ZAI chat failed: ${response.status} ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
 }
 
 // ---- Vision chat helper (image_url or base64 data URL) ----
@@ -86,29 +124,51 @@ export async function visionChat(
   prompt: string,
   imageUrl: string
 ): Promise<string> {
-  const zai = await getZAI();
-  const response = await zai.chat.completions.createVision({
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: prompt },
-          { type: "image_url", image_url: { url: imageUrl } },
-        ],
-      },
-    ],
-    thinking: { type: "disabled" },
-  } as any);
-  return response.choices[0]?.message?.content || "";
+  const cfg = await loadZAIConfig();
+
+  const response = await fetch(`${cfg.baseUrl}/chat/completions/vision`, {
+    method: "POST",
+    headers: buildHeaders(cfg),
+    body: JSON.stringify({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageUrl } },
+          ],
+        },
+      ],
+      thinking: { type: "disabled" },
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`ZAI vision failed: ${response.status} ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
 }
 
 // ---- ASR helper (base64 audio) ----
 export async function transcribe(base64Audio: string): Promise<string> {
-  const zai = await getZAI();
-  const response = await zai.audio.asr.create({
-    file_base64: base64Audio,
-  } as any);
-  return response.text || "";
+  const cfg = await loadZAIConfig();
+
+  const response = await fetch(`${cfg.baseUrl}/audio/asr`, {
+    method: "POST",
+    headers: buildHeaders(cfg),
+    body: JSON.stringify({ file_base64: base64Audio }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`ZAI ASR failed: ${response.status} ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.text || "";
 }
 
 // ---- JSON extraction helper (robust against markdown fences) ----
