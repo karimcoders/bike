@@ -1,0 +1,41 @@
+# =====================================================================
+# Render Blueprint — AI Bike Shop OS
+# =====================================================================
+# This file configures the deployment for Render.com.
+# Render reads this file when you create a new service from a Blueprint.
+#
+# What it does:
+#   - Creates a Docker-based web service
+#   - Attaches a 1GB persistent disk at /data (for SQLite DB + uploads)
+#   - Sets all required environment variables
+#   - Uses the Starter plan (required for persistent disks)
+#
+# Cost: Starter plan ~$7/mo + 1GB disk ~$0.25/mo = ~$7.25/mo
+# Your $5 trial credit covers ~20 days, then upgrade to keep running.
+# =====================================================================
+
+services:
+  - type: web
+    name: bike-shop-os
+    runtime: docker
+    plan: starter
+    # Render auto-detects the Dockerfile in the repo root.
+    # The Dockerfile handles: build → DB init → seed → start server
+    envVars:
+      - key: DATABASE_URL
+        value: file:/data/custom.db
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_DIR
+        value: /data
+      # Optional: Enable AI features (uncomment after getting your key from z.ai)
+      # - key: ZAI_API_KEY
+      #   value: your-api-key-here
+      # - key: ZAI_BASE_URL
+      #   value: https://api.z.ai/v1
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

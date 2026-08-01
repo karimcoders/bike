@@ -1,0 +1,195 @@
+// AI Bike Parts Shop OS - Prisma schema
+// Rural Bihar bike spare parts shop with AI automation + POS + Ledger
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  name      String
+  role      String   @default("STAFF") // ADMIN | MANAGER | SALESMAN | MECHANIC
+  phone     String   @default("")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  movements Movement[]
+  sales     Sale[]
+  chats     ChatMessage[]
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  icon      String?
+  color     String?
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
+model Location {
+  id        String    @id @default(cuid())
+  code      String    @unique // e.g. "A-2-04"
+  rack      String    // "A"
+  row       Int       // 2
+  box       Int       // 4
+  createdAt DateTime  @default(now())
+  products  Product[]
+}
+
+model Product {
+  id            String     @id @default(cuid())
+  name          String
+  bikeModels    String     @default("") // comma separated: "Splendor+,HF Deluxe"
+  brand         String     @default("")
+  oemNumber     String     @default("")
+  categoryId    String?
+  category      Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  locationId    String?    @unique
+  location      Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  purchasePrice Float      @default(0)
+  sellingPrice  Float      @default(0)
+  quantity      Int        @default(0)
+  minStock      Int        @default(5)
+  supplier      String     @default("")
+  photo         String?
+  notes         String     @default("")
+  // AI / future-ready fields
+  barcode       String?
+  qrCode        String?
+  batchNo       String?
+  lastSoldAt    DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  movements     Movement[]
+  saleItems     SaleItem[]
+}
+
+model Movement {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      String   // ADDED | REMOVED | RETURNED | ADJUSTED
+  quantity  Int      // change amount (positive for in, negative for out)
+  reason    String   @default("")
+  note      String   @default("")
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+}
+
+model Settings {
+  id              String   @id @default("singleton")
+  shopName        String   @default("Bike Inventory Pro")
+  ownerName       String   @default("")
+  address         String   @default("")
+  phone           String   @default("")
+  currency        String   @default("₹")
+  theme           String   @default("light") // light | dark
+  // POS / Billing
+  logo            String?  // shop logo URL
+  upiId           String?  // owner UPI ID e.g. "shop@paytm"
+  upiQrImage      String?  // uploaded QR image URL
+  upiApps         String   @default("") // comma-sep: "phonepe,gpay,paytm,bhim"
+  gstNumber       String?
+  receiptSize     String   @default("80") // "58" | "80" | "A4"
+  printerType     String   @default("thermal") // "thermal" | "a4" | "pdf"
+  // WhatsApp automation (wa.me links, no API)
+  whatsappEnabled Boolean  @default(true)
+  whatsappTemplate String  @default("Namaste {name} Ji,\n\nAapka {shop} ka ₹{amount} baki hai.\nDue Date: {date}\n\nKripya samay par payment kar dein.\n\nDhanyawad,\n{shop}")
+  thankYouTemplate String  @default("Namaste {name} Ji,\n\nAapka ₹{amount} payment receive ho gaya. Dhanyawad!\n\n{shop}")
+  billTemplate    String   @default("Namaste {name} Ji,\n\nAapki bill attach ki gayi hai. Total: ₹{amount}\n\nDhanyawad,\n{shop}")
+  smsEnabled      Boolean  @default(false)
+  backupEnabled   Boolean  @default(false)
+  // Footer on bills
+  billFooter      String   @default("Khareedari ka shukriya! Aapka swagat hai next time.")
+}
+
+// ---- AI Shop OS: Sales tracking (for predictions, dead stock, top sellers) ----
+model Customer {
+  id          String        @id @default(cuid())
+  name        String
+  phone       String        @default("")
+  type        String        @default("MECHANIC") // MECHANIC | RETAIL | WHOLESALE
+  notes       String        @default("")
+  // Ledger (denormalized for quick display)
+  outstanding Float         @default(0) // total pending credit (positive = customer owes)
+  advance     Float         @default(0) // advance paid by customer
+  createdAt   DateTime      @default(now())
+  sales       Sale[]
+  ledger      LedgerEntry[]
+}
+
+model Sale {
+  id           String     @id @default(cuid())
+  invoiceNo    String     @default("")
+  customerId   String?
+  customer     Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  userId       String?
+  user         User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  total        Float      @default(0) // subtotal - discount
+  subtotal     Float      @default(0) // sum of line items before discount
+  discount     Float      @default(0) // discount amount
+  profit       Float      @default(0)
+  itemCount    Int        @default(0)
+  note         String     @default("")
+  // Payment (POS)
+  paymentMode  String     @default("CASH") // CASH | UPI | CREDIT | SPLIT
+  paidAmount   Float      @default(0) // amount paid at sale time
+  // Split payment breakdown
+  cashAmount   Float      @default(0)
+  upiAmount    Float      @default(0)
+  creditAmount Float      @default(0) // amount put on credit (udhaar)
+  // Credit tracking
+  dueDate      DateTime?
+  status       String     @default("PAID") // PAID | PARTIAL | PENDING
+  createdAt    DateTime   @default(now())
+  items        SaleItem[]
+  ledger       LedgerEntry[]
+}
+
+model SaleItem {
+  id          String   @id @default(cuid())
+  saleId      String
+  sale        Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name        String   // snapshot
+  price       Float    // selling price snapshot
+  purchasePrice Float  // cost snapshot (for profit)
+  quantity    Int
+  subtotal    Float
+}
+
+// ---- AI Shop OS: Customer Ledger (credit/payments/advances) ----
+model LedgerEntry {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  saleId      String?   // linked sale (for credit)
+  sale        Sale?     @relation(fields: [saleId], references: [id], onDelete: SetNull)
+  type        String    // CREDIT | PAYMENT | ADVANCE | ADJUSTMENT
+  amount      Float     // positive = customer owes more (credit), negative = customer paid (payment/advance)
+  balance     Float     // running outstanding balance after this entry
+  note        String    @default("")
+  dueDate     DateTime?
+  userId      String?
+  createdAt   DateTime  @default(now())
+}
+
+// ---- AI Shop OS: Assistant chat history ----
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   // user | assistant
+  content   String
+  meta      String   @default("") // JSON string for extra context
+  createdAt DateTime @default(now())
+}

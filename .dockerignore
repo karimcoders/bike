@@ -1,0 +1,25 @@
+# Files to exclude from Docker build context (speeds up build, reduces image size)
+node_modules
+.next
+.git
+.gitignore
+db
+*.log
+dev.log
+dev.out.log
+server.log
+.env
+.env.*
+!.env.example
+upload
+tool-results
+skills
+mini-services
+.claude
+*.md
+!RAILWAY-DEPLOY.md
+!RENDER-DEPLOY.md
+Dockerfile
+.dockerignore
+railway.json
+render.yaml
