@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { transcribe, chat, extractJSON, getProductCatalogForAI } from "@/lib/ai";
+import { transcribe, chat, extractJSON, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/voice — Voice search: ASR transcription + NL product search
 // Body: { audio: "base64-encoded-audio" }
@@ -61,6 +61,6 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Voice search error:", e);
-    return err("Voice search failed. Please try again.", 500);
+    return err(aiErrorMessage(e, "Voice search failed. Please try again."), 500);
   }
 }

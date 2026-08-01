@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat } from "@/lib/ai";
+import { chat, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/receipt-message
 // Body: { saleId: string }
@@ -51,6 +51,6 @@ Write a short personalized thank-you message for their bill receipt. Example sty
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Receipt message error:", e);
-    return err("AI message generate nahi ho paya", 500);
+    return err(aiErrorMessage(e, "AI message generate nahi ho paya"), 500);
   }
 }

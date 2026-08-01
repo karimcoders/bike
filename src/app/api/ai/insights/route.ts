@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, extractJSON, getShopSnapshot } from "@/lib/ai";
+import { chat, extractJSON, getShopSnapshot, aiErrorMessage } from "@/lib/ai";
 
 type Insights = {
   generatedAt: string;
@@ -162,6 +162,6 @@ Rules:
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Insights error:", e);
-    return err("Failed to generate insights", 500);
+    return err(aiErrorMessage(e, "Failed to generate insights"), 500);
   }
 }

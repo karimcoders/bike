@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON } from "@/lib/ai";
+import { visionChat, extractJSON, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/ocr — OCR invoice scanner: extract products from a supplier invoice photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -49,6 +49,6 @@ Only include actual product line items, not headers or totals. If qty is not vis
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("OCR error:", e);
-    return err("Invoice scanning failed. Please try again.", 500);
+    return err(aiErrorMessage(e, "Invoice scanning failed. Please try again."), 500);
   }
 }

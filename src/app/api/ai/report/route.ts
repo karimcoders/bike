@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, getShopSnapshot } from "@/lib/ai";
+import { chat, getShopSnapshot, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/report — Generate a natural language business report
 // Body: { type: "daily" | "weekly" | "insights" }
@@ -72,6 +72,6 @@ Keep it concise and actionable. The owner reads this on their phone.`;
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Report error:", e);
-    return err("Failed to generate report", 500);
+    return err(aiErrorMessage(e, "Failed to generate report"), 500);
   }
 }

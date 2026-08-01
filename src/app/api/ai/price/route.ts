@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, extractJSON } from "@/lib/ai";
+import { chat, extractJSON, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/price — Smart price recommendation for a product
 // Body: { productId: string }
@@ -72,6 +72,6 @@ Respond with ONLY valid JSON (no markdown):
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Price recommendation error:", e);
-    return err("Failed to generate price recommendation", 500);
+    return err(aiErrorMessage(e, "Failed to generate price recommendation"), 500);
   }
 }

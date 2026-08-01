@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON } from "@/lib/ai";
+import { visionChat, extractJSON, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/recognize — Smart product recognition from a photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -41,6 +41,6 @@ If the image is not a bike part, return { "name": "", "confidence": "low", "note
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Recognize error:", e);
-    return err("Product recognition failed. Please try again.", 500);
+    return err(aiErrorMessage(e, "Product recognition failed. Please try again."), 500);
   }
 }

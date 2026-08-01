@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat } from "@/lib/ai";
+import { chat, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/daily-closing — generate today's closing report with AI narrative
 export async function POST() {
@@ -189,6 +189,6 @@ Total ₹${totalOutstanding.toLocaleString("en-IN")} collect karna baki hai.
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error(e);
-    return err("Failed to generate daily closing report", 500);
+    return err(aiErrorMessage(e, "Failed to generate daily closing report"), 500);
   }
 }

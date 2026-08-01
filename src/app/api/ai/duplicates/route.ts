@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, extractJSON } from "@/lib/ai";
+import { chat, extractJSON, aiErrorMessage } from "@/lib/ai";
 
 // GET /api/ai/duplicates — Detect potential duplicate products using AI
 export async function GET() {
@@ -38,6 +38,6 @@ Only group products that are genuinely the same part. If no duplicates exist, re
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Duplicates error:", e);
-    return err("Failed to detect duplicates", 500);
+    return err(aiErrorMessage(e, "Failed to detect duplicates"), 500);
   }
 }

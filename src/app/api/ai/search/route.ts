@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, extractJSON, getProductCatalogForAI } from "@/lib/ai";
+import { chat, extractJSON, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/search — Natural language product search
 // Body: { query: string }
@@ -57,6 +57,6 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("AI search error:", e);
-    return err("Search failed. Please try again.", 500);
+    return err(aiErrorMessage(e, "Search failed. Please try again."), 500);
   }
 }

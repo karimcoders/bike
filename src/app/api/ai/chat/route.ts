@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, getShopSnapshot, getProductCatalogForAI } from "@/lib/ai";
+import { chat, getShopSnapshot, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
 
 // POST /api/ai/chat — AI Shop Assistant (Hinglish, shop-aware)
 export async function POST(req: Request) {
@@ -62,7 +62,7 @@ Rules:
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("AI chat error:", e);
-    return err("AI assistant failed. Please try again.", 500);
+    return err(aiErrorMessage(e, "AI assistant failed. Please try again."), 500);
   }
 }
 
