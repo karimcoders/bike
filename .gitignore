@@ -63,7 +63,7 @@ server.log
 
 # Extra excludes for clean repo
 db/
-upload/
+/upload/
 dist/
 tool-results/
 skills/
