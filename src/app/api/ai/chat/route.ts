@@ -1,9 +1,16 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, getShopSnapshot, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
+import {
+  chatWithMeta,
+  getShopSnapshot,
+  getProductCatalogForAI,
+  aiErrorMessage,
+} from "@/lib/ai";
 
 // POST /api/ai/chat — AI Shop Assistant (Hinglish, shop-aware)
+// Smart routing: DB-able queries (stock, price, sales) skip AI entirely.
+// AI queries fall back: Groq → Gemini → Z.ai → Local.
 export async function POST(req: Request) {
   try {
     const user = await requireUser();
@@ -47,7 +54,10 @@ Rules:
       content: m.content,
     }));
 
-    const reply = await chat(systemPrompt, message, { history: histMsgs });
+    // Smart chat — may resolve via DB (instant) or AI (with fallback)
+    const { reply, provider, intentType } = await chatWithMeta(systemPrompt, message, {
+      history: histMsgs,
+    });
 
     // Save to DB
     await db.chatMessage.create({
@@ -57,7 +67,7 @@ Rules:
       data: { userId: user.id, role: "assistant", content: reply },
     });
 
-    return ok({ reply });
+    return ok({ reply, provider, intentType });
   } catch (e) {
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
