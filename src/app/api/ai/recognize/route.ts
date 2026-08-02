@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON, aiErrorMessage, hasAIProvider } from "@/lib/ai";
+import { visionChat, extractJSON, hasAIProvider } from "@/lib/ai";
 
 // POST /api/ai/recognize — Smart product recognition from a photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -11,15 +11,14 @@ export async function POST(req: Request) {
     const { image } = await req.json();
     if (!image) return err("Image required");
 
-    // Check if vision AI is available (Groq llama-4, Gemini, or Z.ai)
+    // Check if vision AI is available
     const hasVision = await hasAIProvider();
     if (!hasVision) {
       return ok({
         recognized: null,
         message:
-          "Photo scan ke liye AI vision provider chahiye. " +
-          "Abhi manually product details bhar ein. " +
-          "Free vision ke liye https://console.groq.com/keys se GROQ_API_KEY lein ( easiest).",
+          "AI vision abhi available nahi hai. Form manually bhar ein — bas 30 second lagenge. " +
+          "AI scan enable karne ke liye Vercel me GROQ_API_KEY ya OPENROUTER_API_KEY set karein.",
         provider: "none",
       });
     }
@@ -38,14 +37,28 @@ export async function POST(req: Request) {
 }
 If the image is not a bike part, return { "name": "", "confidence": "low", "notes": "Image does not appear to be a bike part" }.`;
 
-    const raw = await visionChat(prompt, image);
+    let raw: string;
+    try {
+      raw = await visionChat(prompt, image);
+    } catch (visionErr) {
+      // Vision providers all failed — return friendly response, NOT a 500 error
+      console.error("Vision chat failed:", (visionErr as Error).message);
+      return ok({
+        recognized: null,
+        message:
+          "AI scan abhi kaam nahi kar raha. Form manually bhar ein — 30 second me ho jayega. " +
+          "AI scan ke liye Vercel me OPENROUTER_API_KEY (free, openrouter.ai/keys) set karein.",
+        provider: "none",
+      });
+    }
+
     const recognized = extractJSON<any>(raw);
 
     if (!recognized) {
       return ok({
         recognized: null,
         rawText: raw,
-        message: "Could not parse AI response. Try a clearer photo.",
+        message: "AI response parse nahi hua. Try a clearer photo ya manually bhar ein.",
       });
     }
 
@@ -54,6 +67,6 @@ If the image is not a bike part, return { "name": "", "confidence": "low", "note
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Recognize error:", e);
-    return err(aiErrorMessage(e, "Product recognition failed. Please try again."), 500);
+    return err("Product recognition failed. Please try again or fill manually.", 500);
   }
 }

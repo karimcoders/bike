@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON, aiErrorMessage, hasAIProvider } from "@/lib/ai";
+import { visionChat, extractJSON, hasAIProvider } from "@/lib/ai";
 
 // POST /api/ai/ocr — OCR invoice scanner: extract products from a supplier invoice photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -20,9 +20,8 @@ export async function POST(req: Request) {
         items: [],
         grandTotal: 0,
         message:
-          "Invoice scan ke liye AI vision provider chahiye. " +
-          "Items manually add karein. " +
-          "Free vision ke liye https://console.groq.com/keys se GROQ_API_KEY lein (easiest).",
+          "AI vision abhi available nahi hai. Items manually add karein. " +
+          "AI scan enable karne ke liye Vercel me GROQ_API_KEY ya OPENROUTER_API_KEY set karein.",
         provider: "none",
       });
     }
@@ -39,7 +38,25 @@ export async function POST(req: Request) {
 }
 Only include actual product line items, not headers or totals. If qty is not visible, assume 1. If the image is not an invoice, return { "supplier": "", "items": [], "grandTotal": 0 }.`;
 
-    const raw = await visionChat(prompt, image);
+    let raw: string;
+    try {
+      raw = await visionChat(prompt, image);
+    } catch (visionErr) {
+      // Vision providers all failed — return friendly response, NOT a 500 error
+      console.error("Vision OCR failed:", (visionErr as Error).message);
+      return ok({
+        supplier: "",
+        invoiceNo: "",
+        date: "",
+        items: [],
+        grandTotal: 0,
+        message:
+          "AI scan abhi kaam nahi kar raha. Items manually add karein. " +
+          "AI scan ke liye Vercel me OPENROUTER_API_KEY (free, openrouter.ai/keys) set karein.",
+        provider: "none",
+      });
+    }
+
     const parsed = extractJSON<any>(raw);
 
     if (!parsed) {
@@ -50,7 +67,7 @@ Only include actual product line items, not headers or totals. If qty is not vis
         items: [],
         grandTotal: 0,
         rawText: raw,
-        message: "Could not parse invoice. Try a clearer photo.",
+        message: "AI response parse nahi hua. Try a clearer photo ya manually add karein.",
       });
     }
 
@@ -65,6 +82,6 @@ Only include actual product line items, not headers or totals. If qty is not vis
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("OCR error:", e);
-    return err(aiErrorMessage(e, "Invoice scanning failed. Please try again."), 500);
+    return err("Invoice scanning failed. Please try again or add items manually.", 500);
   }
 }

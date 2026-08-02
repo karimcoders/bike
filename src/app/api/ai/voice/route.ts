@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { transcribe, chat, extractJSON, getProductCatalogForAI, aiErrorMessage, hasAIProvider, searchProductsLocal } from "@/lib/ai";
+import { transcribe, chat, extractJSON, getProductCatalogForAI, searchProductsLocal } from "@/lib/ai";
 
 // POST /api/ai/voice — Voice search: ASR transcription + NL product search
 // Body: { audio: "base64-encoded-audio" }
@@ -12,19 +12,20 @@ export async function POST(req: Request) {
     const { audio } = await req.json();
     if (!audio) return err("Audio data required");
 
-    // Check if AI provider is available (transcribe needs Gemini/Z.ai)
-    const hasAI = await hasAIProvider();
-    if (!hasAI) {
+    // 1. Transcribe audio — gracefully handle if no transcription provider available
+    let transcript = "";
+    try {
+      transcript = await transcribe(audio);
+    } catch (transcribeErr) {
+      console.error("Transcribe failed:", (transcribeErr as Error).message);
       return ok({
         transcript: "",
-        interpretation: "Voice search ke liye AI provider chahiye (Groq/Gemini/Z.ai). Text search use karein.",
+        interpretation: "Voice search abhi kaam nahi kar raha. Text search use karein — typing se product dhundh sakte hain.",
         results: [],
         provider: "none",
       });
     }
 
-    // 1. Transcribe audio
-    const transcript = await transcribe(audio);
     if (!transcript || !transcript.trim()) {
       return ok({
         transcript: "",
@@ -33,8 +34,31 @@ export async function POST(req: Request) {
       });
     }
 
-    // 2. Run NL search on the transcript
+    // 2. Run NL search on the transcript — try local search first (instant, no AI needed)
     const catalog = await getProductCatalogForAI(150);
+    const local = searchProductsLocal(transcript, catalog);
+
+    // If local search found matches, return them immediately
+    if (local.matches.length > 0) {
+      const results: any[] = [];
+      for (const id of local.matches) {
+        try {
+          const p = await db.product.findUnique({
+            where: { id },
+            include: { category: true, location: true },
+          });
+          if (p) results.push(p);
+        } catch {}
+      }
+      return ok({
+        transcript,
+        interpretation: local.interpretation,
+        results,
+        provider: "local",
+      });
+    }
+
+    // 3. If local search found nothing, try AI-powered search
     const systemPrompt = `You are a product search engine for a bike spare-parts shop in rural Bihar. The user spoke in Hindi/Bhojpuri/Hinglish (transcribed via speech-to-text, may have minor errors).
 
 Transcript: "${transcript}"
@@ -49,34 +73,31 @@ Understand bike model names (Splendor, HF Deluxe, Passion, Pulsar, etc.) and par
 }
 If nothing matches, return { "interpretation": "...", "matches": [] }.`;
 
-    const raw = await chat(systemPrompt, transcript);
+    let raw: string;
+    try {
+      raw = await chat(systemPrompt, transcript);
+    } catch (chatErr) {
+      // AI chat failed — return transcript with no results
+      return ok({
+        transcript,
+        interpretation: `"${transcript}" — matching product nahi mila. Text search try karein.`,
+        results: [],
+        provider: "none",
+      });
+    }
+
     const parsed = extractJSON<{ interpretation: string; matches: string[] }>(raw);
 
     const results: any[] = [];
     const matches = parsed?.matches || [];
-    if (matches.length === 0) {
-      // Fallback to local matching if AI returned no matches
-      const local = searchProductsLocal(transcript, catalog);
-      for (const id of local.matches) {
+    for (const id of matches) {
+      try {
         const p = await db.product.findUnique({
           where: { id },
           include: { category: true, location: true },
         });
         if (p) results.push(p);
-      }
-      return ok({
-        transcript,
-        interpretation: local.interpretation,
-        results,
-        provider: "local-fallback",
-      });
-    }
-    for (const id of matches) {
-      const p = await db.product.findUnique({
-        where: { id },
-        include: { category: true, location: true },
-      });
-      if (p) results.push(p);
+      } catch {}
     }
 
     return ok({
@@ -89,6 +110,6 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
     console.error("Voice search error:", e);
-    return err(aiErrorMessage(e, "Voice search failed. Please try again."), 500);
+    return err("Voice search failed. Please try text search.", 500);
   }
 }
