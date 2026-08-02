@@ -47,6 +47,7 @@ const OPENROUTER_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const GROQ_VISION_MODEL_FALLBACK = "llama-3.2-90b-vision-preview";
 
 const GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai";
 const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -781,45 +782,52 @@ export async function smartVisionChat(
     }
   }
 
-  // Try Groq (free, has llama-4-scout vision model)
+  // Try Groq (free, has vision models — try multiple model names for compat)
   if (isProviderAvailable("groq")) {
-    try {
-      const t0 = Date.now();
-      const apiKey = process.env.GROQ_API_KEY!;
-      const response = await fetch(`${GROQ_BASE}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: GROQ_VISION_MODEL,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                { type: "image_url", image_url: { url: imageUrl } },
-              ],
-            },
-          ],
-          temperature: 0.2,
-          max_tokens: 1024,
-        }),
-      });
+    const groqVisionModels = [GROQ_VISION_MODEL, GROQ_VISION_MODEL_FALLBACK];
+    for (const modelName of groqVisionModels) {
+      try {
+        const t0 = Date.now();
+        const apiKey = process.env.GROQ_API_KEY!;
+        const response = await fetch(`${GROQ_BASE}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: prompt },
+                  { type: "image_url", image_url: { url: imageUrl } },
+                ],
+              },
+            ],
+            temperature: 0.2,
+            max_tokens: 1024,
+          }),
+        });
 
-      if (response.ok) {
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        recordSuccess("groq", Date.now() - t0);
-        return { result: content, provider: "groq" };
-      } else {
-        const text = await response.text().catch(() => "");
-        const rateLimited = response.status === 429;
-        recordFailure("groq", `Vision ${response.status}: ${text.slice(0, 100)}`, rateLimited);
+        if (response.ok) {
+          const data = await response.json();
+          const content = data.choices?.[0]?.message?.content || "";
+          recordSuccess("groq", Date.now() - t0);
+          return { result: content, provider: "groq" };
+        } else if (response.status === 404) {
+          // Model not found — try next model name
+          continue;
+        } else {
+          const text = await response.text().catch(() => "");
+          const rateLimited = response.status === 429;
+          recordFailure("groq", `Vision ${response.status}: ${text.slice(0, 100)}`, rateLimited);
+          break; // non-404 error, don't try other models
+        }
+      } catch (e) {
+        console.error(`[ai-router] Groq vision (${modelName}) failed:`, (e as Error).message);
       }
-    } catch (e) {
-      console.error("[ai-router] Groq vision failed:", (e as Error).message);
     }
   }
 
