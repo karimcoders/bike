@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { transcribe, chat, extractJSON, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
+import { transcribe, chat, extractJSON, getProductCatalogForAI, aiErrorMessage, hasAIProvider, searchProductsLocal } from "@/lib/ai";
 
 // POST /api/ai/voice — Voice search: ASR transcription + NL product search
 // Body: { audio: "base64-encoded-audio" }
@@ -11,6 +11,17 @@ export async function POST(req: Request) {
     await requireUser();
     const { audio } = await req.json();
     if (!audio) return err("Audio data required");
+
+    // Check if AI provider is available (transcribe needs Gemini/Z.ai)
+    const hasAI = await hasAIProvider();
+    if (!hasAI) {
+      return ok({
+        transcript: "",
+        interpretation: "Voice search ke liye AI provider chahiye (Groq/Gemini/Z.ai). Text search use karein.",
+        results: [],
+        provider: "none",
+      });
+    }
 
     // 1. Transcribe audio
     const transcript = await transcribe(audio);
@@ -42,20 +53,37 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     const parsed = extractJSON<{ interpretation: string; matches: string[] }>(raw);
 
     const results: any[] = [];
-    if (parsed) {
-      for (const id of parsed.matches || []) {
+    const matches = parsed?.matches || [];
+    if (matches.length === 0) {
+      // Fallback to local matching if AI returned no matches
+      const local = searchProductsLocal(transcript, catalog);
+      for (const id of local.matches) {
         const p = await db.product.findUnique({
           where: { id },
           include: { category: true, location: true },
         });
         if (p) results.push(p);
       }
+      return ok({
+        transcript,
+        interpretation: local.interpretation,
+        results,
+        provider: "local-fallback",
+      });
+    }
+    for (const id of matches) {
+      const p = await db.product.findUnique({
+        where: { id },
+        include: { category: true, location: true },
+      });
+      if (p) results.push(p);
     }
 
     return ok({
       transcript,
       interpretation: parsed?.interpretation || "",
       results,
+      provider: "ai",
     });
   } catch (e) {
     const authErr = handleAuthError(e);

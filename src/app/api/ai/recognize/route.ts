@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON, aiErrorMessage } from "@/lib/ai";
+import { visionChat, extractJSON, aiErrorMessage, hasAIProvider } from "@/lib/ai";
 
 // POST /api/ai/recognize — Smart product recognition from a photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -10,6 +10,19 @@ export async function POST(req: Request) {
     await requireUser();
     const { image } = await req.json();
     if (!image) return err("Image required");
+
+    // Check if vision AI is available (Gemini or Z.ai). Groq is text-only.
+    const hasVision = await hasAIProvider();
+    if (!hasVision) {
+      return ok({
+        recognized: null,
+        message:
+          "Photo scan ke liye AI vision provider chahiye (Gemini ya Z.ai). " +
+          "Abhi manually product details bhar ein. " +
+          "Free vision ke liye https://aistudio.google.com/app/apikey se key lein.",
+        provider: "none",
+      });
+    }
 
     const prompt = `You are an expert in bike spare parts. Look at this image and identify the part. Respond with ONLY valid JSON (no markdown) in this exact format:
 {

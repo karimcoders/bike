@@ -1,7 +1,14 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { chat, extractJSON, getProductCatalogForAI, aiErrorMessage } from "@/lib/ai";
+import {
+  chat,
+  extractJSON,
+  getProductCatalogForAI,
+  aiErrorMessage,
+  hasAIProvider,
+  searchProductsLocal,
+} from "@/lib/ai";
 
 // POST /api/ai/search — Natural language product search
 // Body: { query: string }
@@ -14,6 +21,26 @@ export async function POST(req: Request) {
 
     const catalog = await getProductCatalogForAI(150);
 
+    // ---- Local fallback: no AI provider, do simple text matching ----
+    const hasAI = await hasAIProvider();
+    if (!hasAI) {
+      const local = searchProductsLocal(query, catalog);
+      const results: any[] = [];
+      for (const id of local.matches) {
+        const p = await db.product.findUnique({
+          where: { id },
+          include: { category: true, location: true },
+        });
+        if (p) results.push(p);
+      }
+      return ok({
+        interpretation: local.interpretation,
+        results,
+        provider: "local",
+      });
+    }
+
+    // ---- AI-powered search ----
     const systemPrompt = `You are a product search engine for a bike spare-parts shop. The user speaks Hindi, Bhojpuri, or English (Hinglish).
 
 Given the user's query, find the best matching products from this catalog. Understand synonyms, bike model names, and part names in any language.
@@ -33,9 +60,20 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     const parsed = extractJSON<{ interpretation: string; matches: string[] }>(raw);
 
     if (!parsed) {
+      // Fallback to local matching if AI response wasn't valid JSON
+      const local = searchProductsLocal(query, catalog);
+      const results: any[] = [];
+      for (const id of local.matches) {
+        const p = await db.product.findUnique({
+          where: { id },
+          include: { category: true, location: true },
+        });
+        if (p) results.push(p);
+      }
       return ok({
-        interpretation: "Samajh nahi aaya, dobara try karein.",
-        results: [],
+        interpretation: local.interpretation,
+        results,
+        provider: "local-fallback",
       });
     }
 
@@ -52,6 +90,7 @@ If nothing matches, return { "interpretation": "...", "matches": [] }.`;
     return ok({
       interpretation: parsed.interpretation || "",
       results,
+      provider: "ai",
     });
   } catch (e) {
     const authErr = handleAuthError(e);

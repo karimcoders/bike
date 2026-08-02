@@ -4,20 +4,21 @@ import os from "os";
 import { db } from "./db";
 
 // =====================================================================
-// MULTI-PROVIDER AI CONFIGURATION
+// MULTI-PROVIDER AI CONFIGURATION (with LOCAL FALLBACK)
 // ---------------------------------------------------------------------
-// Supports two providers, auto-detected by env vars:
+// Provider priority (auto-detected):
 //
-// 1. Google Gemini (RECOMMENDED for Vercel / production)
-//    Env: GOOGLE_GENERATED_AI_API_KEY=AIza...
-//    Free tier: 15 req/min, supports text + vision + audio
-//    Get a key: https://aistudio.google.com/app/apikey
+// 1. Google Gemini   — env: GOOGLE_GENERATED_AI_API_KEY  (text+vision+audio)
+// 2. Groq            — env: GROQ_API_KEY                 (text only, SUPER FAST)
+//                      Get free key: https://console.groq.com/keys
+//                      (sign in with Google/GitHub, instant, 30 req/min free)
+// 3. Z.ai sandbox    — auto-detected via /etc/.z-ai-config (dev sandbox only)
+// 4. LOCAL FALLBACK  — no API key needed, uses shop data + simple rules
+//                      (instant, works everywhere, limited intelligence)
 //
-// 2. Z.ai SDK (used in dev sandbox, auto-detected via /etc/.z-ai-config)
-//    Env: ZAI_API_KEY + ZAI_BASE_URL + ZAI_TOKEN
-//    (or rely on the pre-provisioned /etc/.z-ai-config file)
-//
-// If neither is configured, AI routes return a clear actionable error.
+// Vision features (photo recognition, OCR) need Gemini or Z.ai.
+// Text features (chat, search, insights) work with any provider,
+// including the local fallback.
 // =====================================================================
 
 const GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai";
@@ -25,9 +26,20 @@ const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GEMINI_TEXT_MODEL = "gemini-2.5-flash";
 const GEMINI_VISION_MODEL = "gemini-2.5-flash";
 
+const GROQ_BASE = "https://api.groq.com/openai/v1";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+
 // =====================================================================
+// Provider detection
+// =====================================================================
+function hasGemini(): boolean {
+  return !!process.env.GOOGLE_GENERATED_AI_API_KEY;
+}
+function hasGroq(): boolean {
+  return !!process.env.GROQ_API_KEY;
+}
+
 // ZAI Config (sandbox only)
-// =====================================================================
 type ZAIConfig = {
   baseUrl: string;
   apiKey: string;
@@ -43,7 +55,6 @@ async function loadZAIConfig(): Promise<ZAIConfig | null> {
   if (_zaiChecked) return _cachedZAIConfig;
   _zaiChecked = true;
 
-  // 1. Try env vars
   if (process.env.ZAI_API_KEY && process.env.ZAI_BASE_URL) {
     _cachedZAIConfig = {
       baseUrl: process.env.ZAI_BASE_URL,
@@ -55,7 +66,6 @@ async function loadZAIConfig(): Promise<ZAIConfig | null> {
     return _cachedZAIConfig;
   }
 
-  // 2. Fall back to .z-ai-config file (local sandbox)
   const configPaths = [
     path.join(process.cwd(), ".z-ai-config"),
     path.join(os.homedir(), ".z-ai-config"),
@@ -96,30 +106,36 @@ function buildZAIHeaders(cfg: ZAIConfig): Record<string, string> {
   return headers;
 }
 
+// Returns true if ANY real AI provider is available (Gemini / Groq / ZAI)
+export async function hasAIProvider(): Promise<boolean> {
+  if (hasGemini() || hasGroq()) return true;
+  const zai = await loadZAIConfig();
+  return !!zai;
+}
+
 // =====================================================================
 // Error helpers
 // =====================================================================
 export class AIConfigError extends Error {
   constructor() {
     super(
-      "AI service not configured. Set the GOOGLE_GENERATED_AI_API_KEY environment variable " +
-        "(get a free key at https://aistudio.google.com/app/apikey). " +
+      "AI service not configured. To enable AI features, set ONE of these env vars:\n" +
+        "  • GROQ_API_KEY          (recommended, free, instant signup — https://console.groq.com/keys)\n" +
+        "  • GOOGLE_GENERATED_AI_API_KEY  (https://aistudio.google.com/app/apikey)\n" +
         "In the dev sandbox, Z.ai is auto-detected."
     );
     this.name = "AIConfigError";
   }
 }
 
-// Helper for route handlers to return a useful error message to the client.
 export function aiErrorMessage(e: unknown, fallback: string): string {
   if (e instanceof AIConfigError) return e.message;
-  // Surface provider errors too — they usually tell the user what's wrong
-  // (e.g. "Gemini chat failed: 401 invalid api key")
   if (e instanceof Error && e.message) {
     const m = e.message;
     if (
       m.includes("not configured") ||
       m.includes("GOOGLE_GENERATED_AI_API_KEY") ||
+      m.includes("GROQ_API_KEY") ||
       m.includes("invalid api key") ||
       m.includes("API key not valid")
     ) {
@@ -127,10 +143,6 @@ export function aiErrorMessage(e: unknown, fallback: string): string {
     }
   }
   return fallback;
-}
-
-function isConfigured(): boolean {
-  return !!process.env.GOOGLE_GENERATED_AI_API_KEY;
 }
 
 // =====================================================================
@@ -141,12 +153,12 @@ export async function chat(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  if (isConfigured()) {
-    return chatGemini(systemPrompt, userMessage, opts);
-  }
+  if (hasGemini()) return chatGemini(systemPrompt, userMessage, opts);
+  if (hasGroq()) return chatGroq(systemPrompt, userMessage, opts);
   const zaiCfg = await loadZAIConfig();
   if (zaiCfg) return chatZAI(zaiCfg, systemPrompt, userMessage, opts);
-  throw new AIConfigError();
+  // No provider — use local fallback (instant, rule-based)
+  return chatLocal(systemPrompt, userMessage);
 }
 
 async function chatGemini(
@@ -155,10 +167,7 @@ async function chatGemini(
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
   const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
-  const messages: {
-    role: string;
-    content: string;
-  }[] = [
+  const messages = [
     { role: "system", content: systemPrompt },
     ...(opts?.history || []).map((m) => ({
       role: m.role === "assistant" ? "assistant" : "user",
@@ -183,9 +192,44 @@ async function chatGemini(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(
-      `Gemini chat failed: ${response.status} ${text.slice(0, 300)}`
-    );
+    throw new Error(`Gemini chat failed: ${response.status} ${text.slice(0, 300)}`);
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
+async function chatGroq(
+  systemPrompt: string,
+  userMessage: string,
+  opts?: { history?: { role: string; content: string }[] }
+): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY!;
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...(opts?.history || []).map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    })),
+    { role: "user", content: userMessage },
+  ];
+
+  const response = await fetch(`${GROQ_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 2048,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Groq chat failed: ${response.status} ${text.slice(0, 300)}`);
   }
   const data = await response.json();
   return data.choices?.[0]?.message?.content || "";
@@ -197,7 +241,7 @@ async function chatZAI(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  const messages: { role: string; content: string }[] = [
+  const messages = [
     { role: "assistant", content: systemPrompt },
     ...(opts?.history || []),
     { role: "user", content: userMessage },
@@ -220,6 +264,81 @@ async function chatZAI(
   return data.choices?.[0]?.message?.content || "";
 }
 
+// ---- LOCAL FALLBACK CHAT (no API key needed) ----
+// Uses shop data + simple keyword matching to answer common questions.
+// Instant, free, works everywhere. Limited intelligence but very practical.
+async function chatLocal(systemPrompt: string, userMessage: string): Promise<string> {
+  const msg = userMessage.toLowerCase().trim();
+  try {
+    const snapshot = await getShopSnapshot();
+
+    // Greeting detection
+    if (/^(hi|hello|hey|namaste|salaam|assalam)\b/.test(msg)) {
+      return `Namaste! Main ShopMitra hoon, ${snapshot.shopName} ka assistant. Aap puchh sakte hain:\n• "aaj kitne sale hue?"\n• "stock value kya hai?"\n• "low stock parts batao"\n• "top selling products"\n\nNote: Advanced AI (Groq/Gemini) configure karein better answers ke liye.`;
+    }
+
+    // Today's sales
+    if (msg.includes("aaj") && (msg.includes("sale") || msg.includes("bikri") || msg.includes("sell"))) {
+      return `Aaj ${snapshot.sales.todayCount} sale hua, ₹${Math.round(snapshot.sales.todayRevenue).toLocaleString("en-IN")} ki revenue aur ₹${Math.round(snapshot.sales.todayProfit).toLocaleString("en-IN")} profit.`;
+    }
+
+    // Week sales
+    if ((msg.includes("week") || msg.includes("hafta") || msg.includes("saptah")) && (msg.includes("sale") || msg.includes("bikri"))) {
+      return `Is week ${snapshot.sales.weekCount} sale hua, ₹${Math.round(snapshot.sales.weekRevenue).toLocaleString("en-IN")} ki revenue.`;
+    }
+
+    // Stock value
+    if (msg.includes("stock value") || msg.includes("inventory value") || msg.includes("maaldaar")) {
+      return `Total stock value ₹${Math.round(snapshot.totals.stockValue).toLocaleString("en-IN")} hai (${snapshot.totals.products} products, ${snapshot.totals.units} units).`;
+    }
+
+    // Low stock
+    if (msg.includes("low stock") || msg.includes("kam stock") || msg.includes("low")) {
+      if (snapshot.totals.lowStock === 0 && snapshot.totals.outOfStock === 0) {
+        return `Sab products ki stock achhi hai! Koi low stock nahi hai.`;
+      }
+      return `${snapshot.totals.lowStock} products low stock par hain (5 ya kam units), ${snapshot.totals.outOfStock} out of stock hain. Jaldi restock karein.`;
+    }
+
+    // Out of stock
+    if (msg.includes("out of stock") || msg.includes("khatam") || msg.includes("sold out")) {
+      return `${snapshot.totals.outOfStock} products out of stock hain. Restock zaroori hai.`;
+    }
+
+    // Top sellers
+    if (msg.includes("top") || msg.includes("best") || msg.includes("popular") || msg.includes("zayada")) {
+      if (snapshot.topSellers.length === 0) {
+        return `Abhi sales data nahi hai, isliye top sellers nahi bata sakte.`;
+      }
+      const top3 = snapshot.topSellers.slice(0, 3);
+      return `Top selling products (last 30 days):\n${top3.map((t, i) => `${i + 1}. ${t.name} (${t.brand}) — ${t.qty} units, ₹${Math.round(t.revenue).toLocaleString("en-IN")}`).join("\n")}`;
+    }
+
+    // Total products
+    if (msg.includes("kitne product") || msg.includes("total product") || msg.includes("sare product")) {
+      return `Total ${snapshot.totals.products} products hain, ${snapshot.totals.units} units stock mein, ${snapshot.totals.categories} categories aur ${snapshot.totals.locations} locations mein.`;
+    }
+
+    // Product search by name in catalog
+    const catalog = await getProductCatalogForAI(200);
+    const words = msg.split(/\s+/).filter((w) => w.length > 2);
+    const matches = catalog.filter((p) => {
+      const haystack = `${p.name} ${p.brand} ${p.bikes} ${p.oem} ${p.category}`.toLowerCase();
+      return words.some((w) => haystack.includes(w));
+    });
+
+    if (matches.length > 0 && (msg.includes("kahan") || msg.includes("where") || msg.includes("kya") || msg.includes("dhoond") || msg.includes("find") || msg.includes("search"))) {
+      const top = matches.slice(0, 3);
+      return `Mil gaya:\n${top.map((p) => `• ${p.name} (${p.brand}) — ${p.qty} units, location: ${p.location || "N/A"}, sell: ₹${p.sellingPrice}`).join("\n")}`;
+    }
+
+    // Help / default
+    return `Main ${snapshot.shopName} ka assistant hoon. Aap puchh sakte hain:\n• "aaj kitne sale hue?"\n• "stock value kya hai?"\n• "low stock parts batao"\n• "top selling products"\n• " Splendor ka brake shoe kahan hai?"\n\nNote: Smart AI ke liye GROQ_API_KEY set karein (free — https://console.groq.com/keys).`;
+  } catch (e) {
+    return `Sorry, abhi jawab nahi de paaya. "${userMessage}" — dobara try karein.`;
+  }
+}
+
 // =====================================================================
 // PUBLIC: visionChat() — image + text → text
 // =====================================================================
@@ -227,21 +346,15 @@ export async function visionChat(
   prompt: string,
   imageUrl: string
 ): Promise<string> {
-  if (isConfigured()) {
-    return visionChatGemini(prompt, imageUrl);
-  }
+  if (hasGemini()) return visionChatGemini(prompt, imageUrl);
   const zaiCfg = await loadZAIConfig();
   if (zaiCfg) return visionChatZAI(zaiCfg, prompt, imageUrl);
+  // No vision provider — return a helpful message
   throw new AIConfigError();
 }
 
-async function visionChatGemini(
-  prompt: string,
-  imageUrl: string
-): Promise<string> {
+async function visionChatGemini(prompt: string, imageUrl: string): Promise<string> {
   const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
-  // Gemini's OpenAI-compatible endpoint supports image_url with data URLs
-  // (data:image/...;base64,...) and also https URLs.
   const response = await fetch(`${GEMINI_OPENAI_BASE}/chat/completions`, {
     method: "POST",
     headers: {
@@ -265,9 +378,7 @@ async function visionChatGemini(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(
-      `Gemini vision failed: ${response.status} ${text.slice(0, 300)}`
-    );
+    throw new Error(`Gemini vision failed: ${response.status} ${text.slice(0, 300)}`);
   }
   const data = await response.json();
   return data.choices?.[0]?.message?.content || "";
@@ -307,9 +418,7 @@ async function visionChatZAI(
 // PUBLIC: transcribe() — base64 audio → text
 // =====================================================================
 export async function transcribe(base64Audio: string): Promise<string> {
-  if (isConfigured()) {
-    return transcribeGemini(base64Audio);
-  }
+  if (hasGemini()) return transcribeGemini(base64Audio);
   const zaiCfg = await loadZAIConfig();
   if (zaiCfg) return transcribeZAI(zaiCfg, base64Audio);
   throw new AIConfigError();
@@ -317,7 +426,6 @@ export async function transcribe(base64Audio: string): Promise<string> {
 
 async function transcribeGemini(base64Audio: string): Promise<string> {
   const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
-  // Normalize to a data URL so we can extract mime + payload
   let mime = "audio/webm";
   let data = base64Audio;
   if (base64Audio.startsWith("data:")) {
@@ -328,7 +436,6 @@ async function transcribeGemini(base64Audio: string): Promise<string> {
     }
   }
 
-  // Use the NATIVE Gemini API for audio (more reliable than the OpenAI shim)
   const response = await fetch(
     `${GEMINI_NATIVE_BASE}/models/${GEMINI_TEXT_MODEL}:generateContent?key=${apiKey}`,
     {
@@ -350,9 +457,7 @@ async function transcribeGemini(base64Audio: string): Promise<string> {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(
-      `Gemini ASR failed: ${response.status} ${text.slice(0, 300)}`
-    );
+    throw new Error(`Gemini ASR failed: ${response.status} ${text.slice(0, 300)}`);
   }
   const data2 = await response.json();
   const parts = data2.candidates?.[0]?.content?.parts || [];
@@ -384,11 +489,9 @@ async function transcribeZAI(
 // ---- JSON extraction helper (robust against markdown fences) ----
 export function extractJSON<T = any>(text: string): T | null {
   if (!text) return null;
-  // strip markdown code fences
   let t = text.trim();
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) t = fence[1].trim();
-  // find first { ... last }
   const first = t.indexOf("{");
   const firstArr = t.indexOf("[");
   let start = -1;
@@ -408,7 +511,85 @@ export function extractJSON<T = any>(text: string): T | null {
 }
 
 // ====================================================================
-// SHOP CONTEXT BUILDERS — feed real DB data to the AI
+// LOCAL SEARCH (no AI needed) — simple keyword + fuzzy matching
+// Used when no AI provider is configured, or as a fallback.
+// ====================================================================
+export function searchProductsLocal(
+  query: string,
+  catalog: any[]
+): { interpretation: string; matches: string[] } {
+  const q = query.toLowerCase().trim();
+  if (!q) return { interpretation: "Khali query", matches: [] };
+
+  // Tokenize — handle Hindi/English mixed queries
+  // Common synonyms mapping
+  const synonyms: Record<string, string[]> = {
+    brake: ["brake", "brek", "brk"],
+    shoe: ["shoe", "shu", "chappal"],
+    pad: ["pad", "pads"],
+    chain: ["chain", "chen", "zanzir"],
+    oil: ["oil", "tel", "lubricant"],
+    filter: ["filter", "filtr"],
+    plug: ["plug", "plug", "spark"],
+    headlight: ["headlight", "head", "light", "halogen"],
+    mirror: ["mirror", "darpan", "side"],
+    tyre: ["tyre", "tire", "pahiya"],
+    tube: ["tube", "tub"],
+    clutch: ["clutch", "klach"],
+    gear: ["gear", "gir"],
+    engine: ["engine", "injan"],
+    splendor: ["splendor", "splendre", "splender"],
+    hero: ["hero", "hiro"],
+    honda: ["honda", "honda"],
+    bajaj: ["bajaj", "bajaj"],
+    tvs: ["tvs", "tvs"],
+    "passion": ["passion", "passion"],
+    "hf deluxe": ["hf deluxe", "hf", "deluxe"],
+  };
+
+  // Expand query with synonyms
+  const queryWords = q.split(/[\s,]+/).filter((w) => w.length > 1);
+  const expandedWords = new Set<string>();
+  for (const w of queryWords) {
+    expandedWords.add(w);
+    // Find matching synonyms
+    for (const [key, syns] of Object.entries(synonyms)) {
+      if (w.includes(key) || syns.some((s) => w.includes(s))) {
+        expandedWords.add(key);
+        syns.forEach((s) => expandedWords.add(s));
+      }
+    }
+  }
+
+  // Score each product
+  const scored = catalog.map((p) => {
+    const haystack = `${p.name} ${p.brand} ${p.bikes} ${p.oem} ${p.category}`.toLowerCase();
+    let score = 0;
+    for (const w of expandedWords) {
+      if (haystack.includes(w)) {
+        score += w.length > 3 ? 3 : 1; // longer words score more
+      }
+    }
+    // Exact name match bonus
+    if (p.name.toLowerCase().includes(q)) score += 10;
+    return { id: p.id, score, p };
+  });
+
+  const matches = scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map((s) => s.id);
+
+  const interpretation = matches.length
+    ? `"${query}" ke ${matches.length} matches mil gaye.`
+    : `"${query}" ke koi matches nahi mile. Dobara try karein.`;
+
+  return { interpretation, matches };
+}
+
+// ====================================================================
+// SHOP CONTEXT BUILDERS — with 60-second in-memory cache
 // ====================================================================
 
 export type ShopSnapshot = {
@@ -439,7 +620,15 @@ export type ShopSnapshot = {
   }[];
 };
 
+let _snapshotCache: { data: ShopSnapshot; ts: number } | null = null;
+const SNAPSHOT_TTL_MS = 60_000; // 60 seconds
+
 export async function getShopSnapshot(): Promise<ShopSnapshot> {
+  // Return cached if fresh
+  if (_snapshotCache && Date.now() - _snapshotCache.ts < SNAPSHOT_TTL_MS) {
+    return _snapshotCache.data;
+  }
+
   const settings = await db.settings.findUnique({ where: { id: "singleton" } });
   const totalProducts = await db.product.count();
   const agg = await db.product.aggregate({
@@ -450,36 +639,37 @@ export async function getShopSnapshot(): Promise<ShopSnapshot> {
   const lowStock = await db.product.count({
     where: { quantity: { gt: 0, lte: 5 } },
   });
-  const stockValueAgg = await db.product.aggregate({
-    _sum: { sellingPrice: true, quantity: true },
+
+  // Stock value: compute in a single query
+  const products = await db.product.findMany({
+    select: { sellingPrice: true, quantity: true },
   });
-  const stockValue =
-    (stockValueAgg._sum.sellingPrice || 0) * 0 + // placeholder
-    (await db.product
-      .findMany({ select: { sellingPrice: true, quantity: true } })
-      .then((ps) =>
-        ps.reduce((s, p) => s + p.sellingPrice * p.quantity, 0)
-      ));
+  const stockValue = products.reduce(
+    (s, p) => s + p.sellingPrice * p.quantity,
+    0
+  );
+
   const categories = await db.category.count();
   const locations = await db.location.count();
 
-  // Sales: today & this week
   const now = new Date();
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startWeek = new Date(startToday.getTime() - 6 * 86400000);
 
-  const todaySales = await db.sale.findMany({
-    where: { createdAt: { gte: startToday } },
-    include: { items: true },
-  });
-  const weekSales = await db.sale.findMany({
-    where: { createdAt: { gte: startWeek } },
-    include: { items: true },
-  });
+  const [todaySales, weekSales] = await Promise.all([
+    db.sale.findMany({
+      where: { createdAt: { gte: startToday } },
+      select: { total: true, profit: true },
+    }),
+    db.sale.findMany({
+      where: { createdAt: { gte: startWeek } },
+      select: { total: true },
+    }),
+  ]);
 
-  const sumRev = (sales: (typeof todaySales)[number][]) =>
+  const sumRev = (sales: { total: number }[]) =>
     sales.reduce((s, x) => s + x.total, 0);
-  const sumProfit = (sales: (typeof todaySales)[number][]) =>
+  const sumProfit = (sales: { profit: number }[]) =>
     sales.reduce((s, x) => s + x.profit, 0);
 
   // Top sellers from last 30 days
@@ -513,7 +703,7 @@ export async function getShopSnapshot(): Promise<ShopSnapshot> {
     when: s.createdAt.toISOString(),
   }));
 
-  return {
+  const snapshot: ShopSnapshot = {
     shopName: settings?.shopName || "Bike Shop",
     ownerName: settings?.ownerName || "Owner",
     totals: {
@@ -535,10 +725,20 @@ export async function getShopSnapshot(): Promise<ShopSnapshot> {
     topSellers,
     recentSales,
   };
+
+  _snapshotCache = { data: snapshot, ts: Date.now() };
+  return snapshot;
 }
 
-// Compact product list for AI context (avoid huge payloads)
+// Compact product list for AI context — cached for 30s
+let _catalogCache: { data: any[]; ts: number } | null = null;
+const CATALOG_TTL_MS = 30_000;
+
 export async function getProductCatalogForAI(limit = 120) {
+  if (_catalogCache && Date.now() - _catalogCache.ts < CATALOG_TTL_MS && _catalogCache.data.length <= limit) {
+    return _catalogCache.data;
+  }
+
   const products = await db.product.findMany({
     take: limit,
     orderBy: { updatedAt: "desc" },
@@ -547,7 +747,7 @@ export async function getProductCatalogForAI(limit = 120) {
       location: { select: { code: true } },
     },
   });
-  return products.map((p) => ({
+  const catalog = products.map((p) => ({
     id: p.id,
     name: p.name,
     brand: p.brand,
@@ -562,4 +762,7 @@ export async function getProductCatalogForAI(limit = 120) {
     supplier: p.supplier,
     lastSoldAt: p.lastSoldAt?.toISOString() || null,
   }));
+
+  _catalogCache = { data: catalog, ts: Date.now() };
+  return catalog;
 }

@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
-import { visionChat, extractJSON, aiErrorMessage } from "@/lib/ai";
+import { visionChat, extractJSON, aiErrorMessage, hasAIProvider } from "@/lib/ai";
 
 // POST /api/ai/ocr — OCR invoice scanner: extract products from a supplier invoice photo (VLM)
 // Body: { image: "data:image/...;base64,..." or URL }
@@ -10,6 +10,22 @@ export async function POST(req: Request) {
     await requireUser();
     const { image } = await req.json();
     if (!image) return err("Image required");
+
+    const hasVision = await hasAIProvider();
+    if (!hasVision) {
+      return ok({
+        supplier: "",
+        invoiceNo: "",
+        date: "",
+        items: [],
+        grandTotal: 0,
+        message:
+          "Invoice scan ke liye AI vision provider chahiye (Gemini ya Z.ai). " +
+          "Items manually add karein. " +
+          "Free vision ke liye https://aistudio.google.com/app/apikey se key lein.",
+        provider: "none",
+      });
+    }
 
     const prompt = `You are an OCR engine for bike spare-parts supplier invoices/bills in India. Read the invoice in the image carefully. Respond with ONLY valid JSON (no markdown) in this exact format:
 {
