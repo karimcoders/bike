@@ -38,7 +38,11 @@ import { db } from "./db";
 // Provider configuration
 // =====================================================================
 
-export type ProviderName = "groq" | "gemini" | "zai" | "local";
+export type ProviderName = "openrouter" | "groq" | "gemini" | "zai" | "local";
+
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const OPENROUTER_TEXT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const OPENROUTER_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
@@ -67,6 +71,7 @@ export type ProviderStats = {
 };
 
 const _stats: Record<ProviderName, ProviderStats> = {
+  openrouter: { name: "openrouter", requests: 0, successes: 0, failures: 0, rateLimited: 0, lastUsed: null, lastError: null, avgLatencyMs: 0, cooldownUntil: null },
   groq: { name: "groq", requests: 0, successes: 0, failures: 0, rateLimited: 0, lastUsed: null, lastError: null, avgLatencyMs: 0, cooldownUntil: null },
   gemini: { name: "gemini", requests: 0, successes: 0, failures: 0, rateLimited: 0, lastUsed: null, lastError: null, avgLatencyMs: 0, cooldownUntil: null },
   zai: { name: "zai", requests: 0, successes: 0, failures: 0, rateLimited: 0, lastUsed: null, lastError: null, avgLatencyMs: 0, cooldownUntil: null },
@@ -120,6 +125,8 @@ function isProviderAvailable(provider: ProviderName): boolean {
   const s = _stats[provider];
   if (s.cooldownUntil && s.cooldownUntil > Date.now()) return false;
   switch (provider) {
+    case "openrouter":
+      return !!process.env.OPENROUTER_API_KEY;
     case "groq":
       return !!process.env.GROQ_API_KEY;
     case "gemini":
@@ -205,6 +212,7 @@ function buildZAIHeaders(cfg: ZAIConfig): Record<string, string> {
 }
 
 export async function hasAIProvider(): Promise<boolean> {
+  if (isProviderAvailable("openrouter")) return true;
   if (isProviderAvailable("groq")) return true;
   if (isProviderAvailable("gemini")) return true;
   const zai = await loadZAIConfig();
@@ -448,6 +456,51 @@ export async function resolveFromDB(
 // PROVIDER CHAT FUNCTIONS
 // =====================================================================
 
+async function chatOpenRouter(
+  systemPrompt: string,
+  userMessage: string,
+  opts?: { history?: { role: string; content: string }[] }
+): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY!;
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...(opts?.history || []).map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.content,
+    })),
+    { role: "user", content: userMessage },
+  ];
+
+  const t0 = Date.now();
+  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://bike-shop.vercel.app",
+      "X-Title": "Bike Parts Shop OS",
+    },
+    body: JSON.stringify({
+      model: OPENROUTER_TEXT_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    const rateLimited = response.status === 429;
+    recordFailure("openrouter", `OpenRouter ${response.status}: ${text.slice(0, 100)}`, rateLimited);
+    throw new Error(`OpenRouter failed: ${response.status} ${rateLimited ? "(rate limited)" : text.slice(0, 100)}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  recordSuccess("openrouter", Date.now() - t0);
+  return content;
+}
+
 async function chatGroq(
   systemPrompt: string,
   userMessage: string,
@@ -645,14 +698,16 @@ export async function smartChat(
 
   // STEP 2: AI provider fallback chain
   const intent: QueryIntent = { type: "ai", reason: "complex query" };
-  const providers: ProviderName[] = ["groq", "gemini", "zai", "local"];
+  const providers: ProviderName[] = ["openrouter", "groq", "gemini", "zai", "local"];
 
   for (const provider of providers) {
     if (!isProviderAvailable(provider)) continue;
 
     try {
       let reply: string;
-      if (provider === "groq") {
+      if (provider === "openrouter") {
+        reply = await chatOpenRouter(systemPrompt, userMessage, opts);
+      } else if (provider === "groq") {
         reply = await chatGroq(systemPrompt, userMessage, opts);
       } else if (provider === "gemini") {
         reply = await chatGemini(systemPrompt, userMessage, opts);
@@ -682,7 +737,51 @@ export async function smartVisionChat(
   prompt: string,
   imageUrl: string
 ): Promise<{ result: string; provider: ProviderName }> {
-  // Try Groq first (free, has llama-4-scout vision model)
+  // Try OpenRouter first (works globally, free vision models, no geo-block)
+  if (isProviderAvailable("openrouter")) {
+    try {
+      const t0 = Date.now();
+      const apiKey = process.env.OPENROUTER_API_KEY!;
+      const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://bike-shop.vercel.app",
+          "X-Title": "Bike Parts Shop OS",
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_VISION_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                { type: "image_url", image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 1024,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || "";
+        recordSuccess("openrouter", Date.now() - t0);
+        return { result: content, provider: "openrouter" };
+      } else {
+        const text = await response.text().catch(() => "");
+        const rateLimited = response.status === 429;
+        recordFailure("openrouter", `Vision ${response.status}: ${text.slice(0, 100)}`, rateLimited);
+      }
+    } catch (e) {
+      console.error("[ai-router] OpenRouter vision failed:", (e as Error).message);
+    }
+  }
+
+  // Try Groq (free, has llama-4-scout vision model)
   if (isProviderAvailable("groq")) {
     try {
       const t0 = Date.now();
@@ -801,7 +900,7 @@ export async function smartVisionChat(
     }
   }
 
-  throw new Error("No vision AI provider available. Set GROQ_API_KEY (free, recommended — console.groq.com/keys) or GOOGLE_GENERATED_AI_API_KEY for photo scan/OCR.");
+  throw new Error("No vision AI provider available. Set OPENROUTER_API_KEY (free, recommended — openrouter.ai/keys, works in India) or GROQ_API_KEY or GOOGLE_GENERATED_AI_API_KEY for photo scan/OCR.");
 }
 
 // =====================================================================
@@ -811,6 +910,45 @@ export async function smartVisionChat(
 export async function smartTranscribe(
   base64Audio: string
 ): Promise<{ transcript: string; provider: ProviderName }> {
+  // Groq Whisper (fast, free, works globally)
+  if (isProviderAvailable("groq")) {
+    try {
+      const t0 = Date.now();
+      const apiKey = process.env.GROQ_API_KEY!;
+      // Groq Whisper needs the raw audio data (not data URL)
+      let audioData = base64Audio;
+      let mime = "audio/webm";
+      if (base64Audio.startsWith("data:")) {
+        const m = base64Audio.match(/^data:([^;]+);base64,(.+)$/);
+        if (m) { mime = m[1]; audioData = m[2]; }
+      }
+      const audioBlob = Buffer.from(audioData, "base64");
+      const ext = mime.includes("webm") ? "webm" : mime.includes("mp3") ? "mp3" : "wav";
+
+      const formData = new FormData();
+      formData.append("file", new Blob([audioBlob], { type: mime }), `audio.${ext}`);
+      formData.append("model", "whisper-large-v3");
+      formData.append("language", "hi");
+
+      const response = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        recordSuccess("groq", Date.now() - t0);
+        return { transcript: data.text || "", provider: "groq" };
+      } else {
+        const text = await response.text().catch(() => "");
+        recordFailure("groq", `ASR ${response.status}: ${text.slice(0, 100)}`, response.status === 429);
+      }
+    } catch (e) {
+      console.error("[ai-router] Groq ASR failed:", (e as Error).message);
+    }
+  }
+
   // Gemini
   if (isProviderAvailable("gemini")) {
     try {
@@ -884,7 +1022,7 @@ export async function smartTranscribe(
     }
   }
 
-  throw new Error("No transcription provider available. Set GOOGLE_GENERATED_AI_API_KEY for voice search.");
+  throw new Error("No transcription provider available. Set GROQ_API_KEY (whisper, free) or OPENROUTER_API_KEY or GOOGLE_GENERATED_AI_API_KEY for voice search.");
 }
 
 // =====================================================================
