@@ -43,6 +43,10 @@ export type ProviderName = "openrouter" | "groq" | "gemini" | "zai" | "local";
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const OPENROUTER_TEXT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 const OPENROUTER_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+// Model used for tool/function calling — the `:free` slugs on OpenRouter
+// do NOT support tools (they 404). DeepSeek v3.1 (paid slug) supports tools
+// reliably and works with the standard OpenRouter key.
+const OPENROUTER_TOOL_MODEL = "deepseek/deepseek-chat-v3.1";
 
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
@@ -211,7 +215,7 @@ function isProviderAvailableSync(provider: ProviderName): boolean {
 }
 
 /** Async availability check — also considers DB-backed keys. */
-async function isProviderAvailable(provider: ProviderName): Promise<boolean> {
+export async function isProviderAvailable(provider: ProviderName): Promise<boolean> {
   if (!isProviderAvailableSync(provider)) {
     // env var not set — check DB-backed key
     const key = await resolveApiKey(provider);
@@ -584,6 +588,82 @@ async function chatOpenRouter(
   const content = data.choices?.[0]?.message?.content || "";
   recordSuccess("openrouter", Date.now() - t0);
   return content;
+}
+
+// =====================================================================
+// Tool-calling chat (OpenRouter / OpenAI-compatible)
+// ---------------------------------------------------------------------
+// Single round: sends messages + tools, returns the assistant message
+// which may contain plain `content` OR `tool_calls`. The caller is
+// responsible for executing tools and calling again with tool results.
+// =====================================================================
+export type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
+};
+
+export type ToolDef = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export async function chatOpenRouterWithTools(
+  messages: ChatMessage[],
+  tools: ToolDef[]
+): Promise<{
+  content: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+}> {
+  const apiKey = await resolveApiKey("openrouter");
+  if (!apiKey) throw new Error("OpenRouter API key not configured (env or DB settings)");
+  const dbCfg = await loadDBAIConfig();
+  // Prefer DB-configured model if set, otherwise the tool-capable model
+  const textModel = dbCfg?.textModel || OPENROUTER_TOOL_MODEL;
+
+  const t0 = Date.now();
+  const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://bike-shop.vercel.app",
+      "X-Title": "Bike Parts Shop OS",
+    },
+    body: JSON.stringify({
+      model: textModel,
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.5,
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    const rateLimited = response.status === 429;
+    recordFailure("openrouter", `OpenRouter tools ${response.status}: ${text.slice(0, 120)}`, rateLimited);
+    throw new Error(`OpenRouter (tools) failed: ${response.status} ${rateLimited ? "(rate limited)" : text.slice(0, 120)}`);
+  }
+
+  const data = await response.json();
+  const msg = data.choices?.[0]?.message || {};
+  recordSuccess("openrouter", Date.now() - t0);
+  return {
+    content: msg.content || "",
+    tool_calls: msg.tool_calls,
+  };
 }
 
 async function chatGroq(
