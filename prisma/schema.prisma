@@ -109,6 +109,11 @@ model Settings {
   backupEnabled   Boolean  @default(false)
   // Footer on bills
   billFooter      String   @default("Khareedari ka shukriya! Aapka swagat hai next time.")
+  // AI provider config (stored in DB so it survives Vercel redeployments)
+  aiProvider      String   @default("openrouter") // openrouter | groq | gemini | auto
+  aiApiKey        String?  // OpenRouter / Groq / Gemini key (set from Settings UI)
+  aiTextModel     String?  // optional model override
+  aiVisionModel   String?  // optional vision model override
 }
 
 // ---- AI Shop OS: Sales tracking (for predictions, dead stock, top sellers) ----

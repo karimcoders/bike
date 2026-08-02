@@ -9,7 +9,17 @@ export async function GET() {
     if (!settings) {
       settings = await db.settings.create({ data: { id: "singleton" } });
     }
-    return ok({ settings });
+    // Mask the AI API key for security — only return whether it's set + last 4 chars
+    const s = settings as any;
+    const aiKeySet = !!s.aiApiKey;
+    const aiKeyMasked = aiKeySet ? `••••${String(s.aiApiKey).slice(-4)}` : "";
+    return ok({
+      settings: {
+        ...s,
+        aiApiKey: aiKeyMasked,
+        aiKeySet,
+      },
+    });
   } catch (e) {
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
@@ -39,6 +49,11 @@ export async function PUT(req: Request) {
       "thankYouTemplate",
       "billTemplate",
       "billFooter",
+      // AI provider config (DB-backed so keys survive Vercel redeployments)
+      "aiProvider",
+      "aiApiKey",
+      "aiTextModel",
+      "aiVisionModel",
     ];
     const boolFields = [
       "whatsappEnabled",
@@ -46,7 +61,14 @@ export async function PUT(req: Request) {
       "backupEnabled",
     ];
     const data: Record<string, string | boolean> = {};
-    for (const k of stringFields) if (k in body) data[k] = String(body[k]);
+    for (const k of stringFields) {
+      if (k in body) {
+        const v = String(body[k]);
+        // Don't overwrite the real AI key with the masked placeholder
+        if (k === "aiApiKey" && v.startsWith("••••")) continue;
+        data[k] = v;
+      }
+    }
     for (const k of boolFields) if (k in body) data[k] = Boolean(body[k]);
     const settings = await db.settings.upsert({
       where: { id: "singleton" },

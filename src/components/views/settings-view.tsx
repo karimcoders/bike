@@ -775,6 +775,104 @@ function BillSection({ s }: { s: Settings }) {
   );
 }
 
+// ===================== AI Provider Config =====================
+function AISection({ s }: { s: Settings }) {
+  const update = useUpdateSettings();
+  const [provider, setProvider] = useState(s.aiProvider || "openrouter");
+  const [apiKey, setApiKey] = useState(s.aiApiKey || "");
+  const [showKey, setShowKey] = useState(false);
+  const keySet = !!s.aiKeySet;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    update.mutate(
+      { aiProvider: provider, aiApiKey: apiKey },
+      {
+        onSuccess: () => {
+          toast.success("AI settings save ho gaye");
+          setApiKey(""); // clear local — server keeps the real one
+        },
+      }
+    );
+  };
+
+  return (
+    <Card className="shadow-soft">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <KeyRound className="size-4 text-primary" />
+          AI Provider (Chat, Scan, Voice)
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={submit} className="space-y-4">
+          <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/30 p-3 text-xs text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+            <strong className="font-semibold">Status:</strong>{" "}
+            {keySet ? (
+              <>✅ AI key configured — chat, photo scan, voice search sab kaam karenge.</>
+            ) : (
+              <>⚠️ AI key set nahi hai. Chat/Scan/Voice kaam nahi karenge. Niche key daalein.</>
+            )}
+          </div>
+
+          <div>
+            <Label className="text-sm font-medium">AI Provider</Label>
+            <Select value={provider} onValueChange={setProvider}>
+              <SelectTrigger className="mt-1 rounded-xl">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="openrouter">OpenRouter (recommended — free models)</SelectItem>
+                <SelectItem value="groq">Groq (fast, free)</SelectItem>
+                <SelectItem value="gemini">Google Gemini</SelectItem>
+                <SelectItem value="auto">Auto (try all)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              OpenRouter sabse achha hai — India mein kaam karta hai, free models available.
+            </p>
+          </div>
+
+          <div>
+            <Label className="text-sm font-medium">API Key</Label>
+            <div className="relative mt-1">
+              <Input
+                type={showKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="rounded-xl pr-10"
+                placeholder={keySet ? `Saved: ${s.aiApiKey} (type new to replace)` : "sk-or-v1-... (OpenRouter key)"}
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                tabIndex={-1}
+              >
+                {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Key DB mein save hota hai — Vercel redeploy ke baad bhi rehta hai. Get a free key:{" "}
+              <a
+                href="https://openrouter.ai/keys"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline"
+              >
+                openrouter.ai/keys
+              </a>
+            </p>
+          </div>
+
+          <SaveBtn pending={update.isPending} label="Save AI Settings" />
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ===================== Staff Management =====================
 function RoleBadge({ role }: { role: Role }) {
   return (
@@ -1411,6 +1509,9 @@ export function SettingsView() {
 
       {/* 6. Bill */}
       <BillSection s={s} />
+
+      {/* 6b. AI Provider Config */}
+      <AISection s={s} />
 
       {/* 7. Staff (ADMIN only) */}
       {isAdmin && <StaffSection />}

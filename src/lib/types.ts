@@ -98,6 +98,12 @@ export type Settings = {
   smsEnabled: boolean;
   backupEnabled: boolean;
   billFooter: string;
+  // AI provider config (DB-backed so keys survive Vercel redeployments)
+  aiProvider?: string; // "openrouter" | "groq" | "gemini" | "auto"
+  aiApiKey?: string;   // masked in GET response (••••1234)
+  aiKeySet?: boolean;  // true if a key is stored in DB
+  aiTextModel?: string | null;
+  aiVisionModel?: string | null;
 };
 
 export type Customer = {

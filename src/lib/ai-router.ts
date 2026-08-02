@@ -55,6 +55,77 @@ const GEMINI_TEXT_MODEL = "gemini-flash-latest";
 const GEMINI_VISION_MODEL = "gemini-flash-latest";
 
 // =====================================================================
+// DB-backed AI config (so keys survive Vercel redeployments)
+// ---------------------------------------------------------------------
+// Priority for resolving the API key:
+//   1. process.env.OPENROUTER_API_KEY  (Vercel env var — fastest)
+//   2. db.settings.aiApiKey            (set from Settings UI — persistent)
+// Same for GROQ_API_KEY / GOOGLE_GENERATED_AI_API_KEY.
+// =====================================================================
+
+type DBAIConfig = {
+  provider: string;     // "openrouter" | "groq" | "gemini" | "auto"
+  apiKey: string | null;
+  textModel: string | null;
+  visionModel: string | null;
+};
+
+let _dbAIConfigCache: { data: DBAIConfig | null; ts: number } | null = null;
+const DB_AI_TTL_MS = 30_000;
+
+async function loadDBAIConfig(): Promise<DBAIConfig | null> {
+  if (_dbAIConfigCache && Date.now() - _dbAIConfigCache.ts < DB_AI_TTL_MS) {
+    return _dbAIConfigCache.data;
+  }
+  try {
+    const s = await db.settings.findUnique({ where: { id: "singleton" } });
+    const cfg: DBAIConfig | null = s && (s as any).aiApiKey
+      ? {
+          provider: (s as any).aiProvider || "openrouter",
+          apiKey: (s as any).aiApiKey,
+          textModel: (s as any).aiTextModel || null,
+          visionModel: (s as any).aiVisionModel || null,
+        }
+      : null;
+    _dbAIConfigCache = { data: cfg, ts: Date.now() };
+    return cfg;
+  } catch (e) {
+    // DB unavailable or column missing — fall back to env vars only
+    console.warn("[ai-router] loadDBAIConfig failed:", (e as Error)?.message?.slice(0, 80));
+    _dbAIConfigCache = { data: null, ts: Date.now() - DB_AI_TTL_MS + 5_000 };
+    return null;
+  }
+}
+
+/** Resolve the effective API key for a provider (env var first, then DB). */
+async function resolveApiKey(provider: ProviderName): Promise<string | null> {
+  switch (provider) {
+    case "openrouter": {
+      if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
+      const db = await loadDBAIConfig();
+      if (db?.apiKey && (db.provider === "openrouter" || db.provider === "auto")) {
+        return db.apiKey;
+      }
+      return null;
+    }
+    case "groq": {
+      if (process.env.GROQ_API_KEY) return process.env.GROQ_API_KEY;
+      const db = await loadDBAIConfig();
+      if (db?.apiKey && db.provider === "groq") return db.apiKey;
+      return null;
+    }
+    case "gemini": {
+      if (process.env.GOOGLE_GENERATED_AI_API_KEY) return process.env.GOOGLE_GENERATED_AI_API_KEY;
+      const db = await loadDBAIConfig();
+      if (db?.apiKey && db.provider === "gemini") return db.apiKey;
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+// =====================================================================
 // Usage tracking (in-memory, resets on server restart)
 // =====================================================================
 
@@ -85,7 +156,7 @@ export function getUsageStats() {
     generatedAt: new Date().toISOString(),
     providers: Object.values(_stats).map((s) => ({
       ...s,
-      available: isProviderAvailable(s.name),
+      available: isProviderAvailableSync(s.name),
       cooldownRemainingMs: s.cooldownUntil && s.cooldownUntil > now ? s.cooldownUntil - now : 0,
     })),
     totals: {
@@ -122,7 +193,7 @@ function recordFailure(provider: ProviderName, error: string, rateLimited = fals
   }
 }
 
-function isProviderAvailable(provider: ProviderName): boolean {
+function isProviderAvailableSync(provider: ProviderName): boolean {
   const s = _stats[provider];
   if (s.cooldownUntil && s.cooldownUntil > Date.now()) return false;
   switch (provider) {
@@ -137,6 +208,16 @@ function isProviderAvailable(provider: ProviderName): boolean {
     case "local":
       return true; // always
   }
+}
+
+/** Async availability check — also considers DB-backed keys. */
+async function isProviderAvailable(provider: ProviderName): Promise<boolean> {
+  if (!isProviderAvailableSync(provider)) {
+    // env var not set — check DB-backed key
+    const key = await resolveApiKey(provider);
+    return !!key;
+  }
+  return true;
 }
 
 // =====================================================================
@@ -213,9 +294,9 @@ function buildZAIHeaders(cfg: ZAIConfig): Record<string, string> {
 }
 
 export async function hasAIProvider(): Promise<boolean> {
-  if (isProviderAvailable("openrouter")) return true;
-  if (isProviderAvailable("groq")) return true;
-  if (isProviderAvailable("gemini")) return true;
+  if (await isProviderAvailable("openrouter")) return true;
+  if (await isProviderAvailable("groq")) return true;
+  if (await isProviderAvailable("gemini")) return true;
   const zai = await loadZAIConfig();
   return !!zai;
 }
@@ -462,7 +543,10 @@ async function chatOpenRouter(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY!;
+  const apiKey = await resolveApiKey("openrouter");
+  if (!apiKey) throw new Error("OpenRouter API key not configured (env or DB settings)");
+  const dbCfg = await loadDBAIConfig();
+  const textModel = dbCfg?.textModel || OPENROUTER_TEXT_MODEL;
   const messages = [
     { role: "system", content: systemPrompt },
     ...(opts?.history || []).map((m) => ({
@@ -482,7 +566,7 @@ async function chatOpenRouter(
       "X-Title": "Bike Parts Shop OS",
     },
     body: JSON.stringify({
-      model: OPENROUTER_TEXT_MODEL,
+      model: textModel,
       messages,
       temperature: 0.7,
       max_tokens: 1024,
@@ -507,7 +591,8 @@ async function chatGroq(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY!;
+  const apiKey = await resolveApiKey("groq");
+  if (!apiKey) throw new Error("Groq API key not configured (env or DB settings)");
   const messages = [
     { role: "system", content: systemPrompt },
     ...(opts?.history || []).map((m) => ({
@@ -550,7 +635,8 @@ async function chatGemini(
   userMessage: string,
   opts?: { history?: { role: string; content: string }[] }
 ): Promise<string> {
-  const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
+  const apiKey = await resolveApiKey("gemini");
+  if (!apiKey) throw new Error("Gemini API key not configured (env or DB settings)");
   const messages = [
     { role: "system", content: systemPrompt },
     ...(opts?.history || []).map((m) => ({
@@ -702,7 +788,7 @@ export async function smartChat(
   const providers: ProviderName[] = ["openrouter", "groq", "gemini", "zai", "local"];
 
   for (const provider of providers) {
-    if (!isProviderAvailable(provider)) continue;
+    if (!(await isProviderAvailable(provider))) continue;
 
     try {
       let reply: string;
@@ -739,10 +825,13 @@ export async function smartVisionChat(
   imageUrl: string
 ): Promise<{ result: string; provider: ProviderName }> {
   // Try OpenRouter first (works globally, free vision models, no geo-block)
-  if (isProviderAvailable("openrouter")) {
+  if (await isProviderAvailable("openrouter")) {
     try {
       const t0 = Date.now();
-      const apiKey = process.env.OPENROUTER_API_KEY!;
+      const apiKey = await resolveApiKey("openrouter");
+      if (!apiKey) throw new Error("OpenRouter key missing");
+      const dbCfg = await loadDBAIConfig();
+      const visionModel = dbCfg?.visionModel || OPENROUTER_VISION_MODEL;
       const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
         method: "POST",
         headers: {
@@ -752,7 +841,7 @@ export async function smartVisionChat(
           "X-Title": "Bike Parts Shop OS",
         },
         body: JSON.stringify({
-          model: OPENROUTER_VISION_MODEL,
+          model: visionModel,
           messages: [
             {
               role: "user",
@@ -783,12 +872,13 @@ export async function smartVisionChat(
   }
 
   // Try Groq (free, has vision models — try multiple model names for compat)
-  if (isProviderAvailable("groq")) {
+  if (await isProviderAvailable("groq")) {
     const groqVisionModels = [GROQ_VISION_MODEL, GROQ_VISION_MODEL_FALLBACK];
     for (const modelName of groqVisionModels) {
       try {
         const t0 = Date.now();
-        const apiKey = process.env.GROQ_API_KEY!;
+        const apiKey = await resolveApiKey("groq");
+        if (!apiKey) throw new Error("Groq key missing");
         const response = await fetch(`${GROQ_BASE}/chat/completions`, {
           method: "POST",
           headers: {
@@ -832,10 +922,11 @@ export async function smartVisionChat(
   }
 
   // Try Gemini (best vision)
-  if (isProviderAvailable("gemini")) {
+  if (await isProviderAvailable("gemini")) {
     try {
       const t0 = Date.now();
-      const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
+      const apiKey = await resolveApiKey("gemini");
+      if (!apiKey) throw new Error("Gemini key missing");
       const response = await fetch(`${GEMINI_OPENAI_BASE}/chat/completions`, {
         method: "POST",
         headers: {
@@ -874,7 +965,7 @@ export async function smartVisionChat(
 
   // Try Z.ai
   const zaiCfg = await loadZAIConfig();
-  if (zaiCfg && isProviderAvailable("zai")) {
+  if (zaiCfg && (await isProviderAvailable("zai"))) {
     try {
       const t0 = Date.now();
       const response = await fetch(`${zaiCfg.baseUrl}/chat/completions/vision`, {
@@ -919,10 +1010,11 @@ export async function smartTranscribe(
   base64Audio: string
 ): Promise<{ transcript: string; provider: ProviderName }> {
   // Groq Whisper (fast, free, works globally)
-  if (isProviderAvailable("groq")) {
+  if (await isProviderAvailable("groq")) {
     try {
       const t0 = Date.now();
-      const apiKey = process.env.GROQ_API_KEY!;
+      const apiKey = await resolveApiKey("groq");
+      if (!apiKey) throw new Error("Groq key missing");
       // Groq Whisper needs the raw audio data (not data URL)
       let audioData = base64Audio;
       let mime = "audio/webm";
@@ -958,10 +1050,11 @@ export async function smartTranscribe(
   }
 
   // Gemini
-  if (isProviderAvailable("gemini")) {
+  if (await isProviderAvailable("gemini")) {
     try {
       const t0 = Date.now();
-      const apiKey = process.env.GOOGLE_GENERATED_AI_API_KEY!;
+      const apiKey = await resolveApiKey("gemini");
+      if (!apiKey) throw new Error("Gemini key missing");
       let mime = "audio/webm";
       let data = base64Audio;
       if (base64Audio.startsWith("data:")) {
@@ -1008,7 +1101,7 @@ export async function smartTranscribe(
 
   // Z.ai
   const zaiCfg = await loadZAIConfig();
-  if (zaiCfg && isProviderAvailable("zai")) {
+  if (zaiCfg && (await isProviderAvailable("zai"))) {
     try {
       const t0 = Date.now();
       const response = await fetch(`${zaiCfg.baseUrl}/audio/asr`, {
