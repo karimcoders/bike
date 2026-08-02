@@ -20,9 +20,9 @@ export async function POST(req: Request) {
         items: [],
         grandTotal: 0,
         message:
-          "Invoice scan ke liye AI vision provider chahiye (Gemini ya Z.ai). " +
+          "Invoice scan ke liye AI vision provider chahiye. " +
           "Items manually add karein. " +
-          "Free vision ke liye https://aistudio.google.com/app/apikey se key lein.",
+          "Free vision ke liye https://console.groq.com/keys se GROQ_API_KEY lein (easiest).",
         provider: "none",
       });
     }

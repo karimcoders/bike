@@ -11,15 +11,15 @@ export async function POST(req: Request) {
     const { image } = await req.json();
     if (!image) return err("Image required");
 
-    // Check if vision AI is available (Gemini or Z.ai). Groq is text-only.
+    // Check if vision AI is available (Groq llama-4, Gemini, or Z.ai)
     const hasVision = await hasAIProvider();
     if (!hasVision) {
       return ok({
         recognized: null,
         message:
-          "Photo scan ke liye AI vision provider chahiye (Gemini ya Z.ai). " +
+          "Photo scan ke liye AI vision provider chahiye. " +
           "Abhi manually product details bhar ein. " +
-          "Free vision ke liye https://aistudio.google.com/app/apikey se key lein.",
+          "Free vision ke liye https://console.groq.com/keys se GROQ_API_KEY lein ( easiest).",
         provider: "none",
       });
     }

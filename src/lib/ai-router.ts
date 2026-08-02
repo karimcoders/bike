@@ -42,6 +42,7 @@ export type ProviderName = "groq" | "gemini" | "zai" | "local";
 
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
+const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const GEMINI_OPENAI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai";
 const GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -681,7 +682,49 @@ export async function smartVisionChat(
   prompt: string,
   imageUrl: string
 ): Promise<{ result: string; provider: ProviderName }> {
-  // Try Gemini first (best vision)
+  // Try Groq first (free, has llama-4-scout vision model)
+  if (isProviderAvailable("groq")) {
+    try {
+      const t0 = Date.now();
+      const apiKey = process.env.GROQ_API_KEY!;
+      const response = await fetch(`${GROQ_BASE}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: GROQ_VISION_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: prompt },
+                { type: "image_url", image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 1024,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || "";
+        recordSuccess("groq", Date.now() - t0);
+        return { result: content, provider: "groq" };
+      } else {
+        const text = await response.text().catch(() => "");
+        const rateLimited = response.status === 429;
+        recordFailure("groq", `Vision ${response.status}: ${text.slice(0, 100)}`, rateLimited);
+      }
+    } catch (e) {
+      console.error("[ai-router] Groq vision failed:", (e as Error).message);
+    }
+  }
+
+  // Try Gemini (best vision)
   if (isProviderAvailable("gemini")) {
     try {
       const t0 = Date.now();
@@ -758,7 +801,7 @@ export async function smartVisionChat(
     }
   }
 
-  throw new Error("No vision AI provider available. Set GOOGLE_GENERATED_AI_API_KEY for photo scan/OCR.");
+  throw new Error("No vision AI provider available. Set GROQ_API_KEY (free, recommended — console.groq.com/keys) or GOOGLE_GENERATED_AI_API_KEY for photo scan/OCR.");
 }
 
 // =====================================================================
