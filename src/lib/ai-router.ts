@@ -372,13 +372,20 @@ export async function resolveFromDB(
     case "location_check": {
       // Search the product catalog
       if (!intent.query) return null;
-      const products = await db.product.findMany({
-        take: 100,
-        include: {
-          category: { select: { name: true } },
-          location: { select: { code: true } },
-        },
-      });
+      let products: any[];
+      try {
+        products = await db.product.findMany({
+          take: 100,
+          include: {
+            category: { select: { name: true } },
+            location: { select: { code: true } },
+          },
+        });
+      } catch (dbErr) {
+        // DB unavailable — can't search products
+        console.warn("resolveFromDB: product search DB unavailable.", (dbErr as Error)?.message?.slice(0, 80));
+        return null;
+      }
 
       const q = intent.query.toLowerCase();
       const words = q.split(/[\s,?]+/).filter((w) => w.length > 2);
@@ -623,9 +630,14 @@ export async function smartChat(
   if (!opts?.skipDB && snapshot) {
     const intent = detectIntent(userMessage);
     if (intent.type === "db") {
-      const reply = await resolveFromDB(intent, snapshot);
-      if (reply) {
-        return { reply, provider: "local", intent, fromCache: false };
+      try {
+        const reply = await resolveFromDB(intent, snapshot);
+        if (reply) {
+          return { reply, provider: "local", intent, fromCache: false };
+        }
+      } catch (dbErr) {
+        // DB resolution failed — fall through to AI providers
+        console.warn("[ai-router] DB resolution failed, falling through to AI:", (dbErr as Error)?.message?.slice(0, 80));
       }
     }
   }

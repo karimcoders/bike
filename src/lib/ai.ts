@@ -195,107 +195,128 @@ export type ShopSnapshot = {
 let _snapshotCache: { data: ShopSnapshot; ts: number } | null = null;
 const SNAPSHOT_TTL_MS = 60_000;
 
+// Safe default snapshot — used when DB is unavailable (e.g. Vercel without DATABASE_URL)
+function defaultSnapshot(): ShopSnapshot {
+  return {
+    shopName: "Bike Shop",
+    ownerName: "Owner",
+    totals: { products: 0, units: 0, outOfStock: 0, lowStock: 0, stockValue: 0, categories: 0, locations: 0 },
+    sales: { todayCount: 0, todayRevenue: 0, todayProfit: 0, weekCount: 0, weekRevenue: 0 },
+    topSellers: [],
+    recentSales: [],
+  };
+}
+
 export async function getShopSnapshot(): Promise<ShopSnapshot> {
   if (_snapshotCache && Date.now() - _snapshotCache.ts < SNAPSHOT_TTL_MS) {
     return _snapshotCache.data;
   }
 
-  const settings = await db.settings.findUnique({ where: { id: "singleton" } });
-  const totalProducts = await db.product.count();
-  const agg = await db.product.aggregate({
-    _sum: { quantity: true },
-    _count: true,
-  });
-  const outOfStock = await db.product.count({ where: { quantity: { lte: 0 } } });
-  const lowStock = await db.product.count({
-    where: { quantity: { gt: 0, lte: 5 } },
-  });
+  try {
+    const settings = await db.settings.findUnique({ where: { id: "singleton" } });
+    const totalProducts = await db.product.count();
+    const agg = await db.product.aggregate({
+      _sum: { quantity: true },
+      _count: true,
+    });
+    const outOfStock = await db.product.count({ where: { quantity: { lte: 0 } } });
+    const lowStock = await db.product.count({
+      where: { quantity: { gt: 0, lte: 5 } },
+    });
 
-  const products = await db.product.findMany({
-    select: { sellingPrice: true, quantity: true },
-  });
-  const stockValue = products.reduce(
-    (s, p) => s + p.sellingPrice * p.quantity,
-    0
-  );
+    const products = await db.product.findMany({
+      select: { sellingPrice: true, quantity: true },
+    });
+    const stockValue = products.reduce(
+      (s, p) => s + p.sellingPrice * p.quantity,
+      0
+    );
 
-  const categories = await db.category.count();
-  const locations = await db.location.count();
+    const categories = await db.category.count();
+    const locations = await db.location.count();
 
-  const now = new Date();
-  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startWeek = new Date(startToday.getTime() - 6 * 86400000);
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startWeek = new Date(startToday.getTime() - 6 * 86400000);
 
-  const [todaySales, weekSales] = await Promise.all([
-    db.sale.findMany({
-      where: { createdAt: { gte: startToday } },
-      select: { total: true, profit: true },
-    }),
-    db.sale.findMany({
-      where: { createdAt: { gte: startWeek } },
-      select: { total: true },
-    }),
-  ]);
+    const [todaySales, weekSales] = await Promise.all([
+      db.sale.findMany({
+        where: { createdAt: { gte: startToday } },
+        select: { total: true, profit: true },
+      }),
+      db.sale.findMany({
+        where: { createdAt: { gte: startWeek } },
+        select: { total: true },
+      }),
+    ]);
 
-  const sumRev = (sales: { total: number }[]) =>
-    sales.reduce((s, x) => s + x.total, 0);
-  const sumProfit = (sales: { profit: number }[]) =>
-    sales.reduce((s, x) => s + x.profit, 0);
+    const sumRev = (sales: { total: number }[]) =>
+      sales.reduce((s, x) => s + x.total, 0);
+    const sumProfit = (sales: { profit: number }[]) =>
+      sales.reduce((s, x) => s + x.profit, 0);
 
-  const start30 = new Date(now.getTime() - 29 * 86400000);
-  const recentItems = await db.saleItem.findMany({
-    where: { sale: { createdAt: { gte: start30 } } },
-    select: { name: true, quantity: true, subtotal: true, product: { select: { brand: true } } },
-  });
-  const topMap = new Map<string, { name: string; brand: string; qty: number; revenue: number }>();
-  for (const it of recentItems) {
-    const k = it.name;
-    const cur = topMap.get(k) || { name: it.name, brand: it.product?.brand || "", qty: 0, revenue: 0 };
-    cur.qty += it.quantity;
-    cur.revenue += it.subtotal;
-    topMap.set(k, cur);
+    const start30 = new Date(now.getTime() - 29 * 86400000);
+    const recentItems = await db.saleItem.findMany({
+      where: { sale: { createdAt: { gte: start30 } } },
+      select: { name: true, quantity: true, subtotal: true, product: { select: { brand: true } } },
+    });
+    const topMap = new Map<string, { name: string; brand: string; qty: number; revenue: number }>();
+    for (const it of recentItems) {
+      const k = it.name;
+      const cur = topMap.get(k) || { name: it.name, brand: it.product?.brand || "", qty: 0, revenue: 0 };
+      cur.qty += it.quantity;
+      cur.revenue += it.subtotal;
+      topMap.set(k, cur);
+    }
+    const topSellers = Array.from(topMap.values())
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 8);
+
+    const recent = await db.sale.findMany({
+      take: 10,
+      orderBy: { createdAt: "desc" },
+      include: { items: { select: { name: true, quantity: true, subtotal: true } } },
+    });
+    const recentSales = recent.map((s) => ({
+      product: s.items[0]?.name || "Multiple items",
+      qty: s.items.reduce((a, b) => a + b.quantity, 0),
+      total: s.total,
+      when: s.createdAt.toISOString(),
+    }));
+
+    const snapshot: ShopSnapshot = {
+      shopName: settings?.shopName || "Bike Shop",
+      ownerName: settings?.ownerName || "Owner",
+      totals: {
+        products: totalProducts,
+        units: agg._sum.quantity || 0,
+        outOfStock,
+        lowStock,
+        stockValue,
+        categories,
+        locations,
+      },
+      sales: {
+        todayCount: todaySales.length,
+        todayRevenue: sumRev(todaySales),
+        todayProfit: sumProfit(todaySales),
+        weekCount: weekSales.length,
+        weekRevenue: sumRev(weekSales),
+      },
+      topSellers,
+      recentSales,
+    };
+
+    _snapshotCache = { data: snapshot, ts: Date.now() };
+    return snapshot;
+  } catch (e) {
+    // DB unavailable (e.g. Vercel without DATABASE_URL) — return safe defaults
+    console.warn("getShopSnapshot: DB unavailable, using defaults.", (e as Error)?.message?.slice(0, 100));
+    const fallback = defaultSnapshot();
+    // Cache the fallback for 10s to avoid hammering a dead DB
+    _snapshotCache = { data: fallback, ts: Date.now() - SNAPSHOT_TTL_MS + 10_000 };
+    return fallback;
   }
-  const topSellers = Array.from(topMap.values())
-    .sort((a, b) => b.qty - a.qty)
-    .slice(0, 8);
-
-  const recent = await db.sale.findMany({
-    take: 10,
-    orderBy: { createdAt: "desc" },
-    include: { items: { select: { name: true, quantity: true, subtotal: true } } },
-  });
-  const recentSales = recent.map((s) => ({
-    product: s.items[0]?.name || "Multiple items",
-    qty: s.items.reduce((a, b) => a + b.quantity, 0),
-    total: s.total,
-    when: s.createdAt.toISOString(),
-  }));
-
-  const snapshot: ShopSnapshot = {
-    shopName: settings?.shopName || "Bike Shop",
-    ownerName: settings?.ownerName || "Owner",
-    totals: {
-      products: totalProducts,
-      units: agg._sum.quantity || 0,
-      outOfStock,
-      lowStock,
-      stockValue,
-      categories,
-      locations,
-    },
-    sales: {
-      todayCount: todaySales.length,
-      todayRevenue: sumRev(todaySales),
-      todayProfit: sumProfit(todaySales),
-      weekCount: weekSales.length,
-      weekRevenue: sumRev(weekSales),
-    },
-    topSellers,
-    recentSales,
-  };
-
-  _snapshotCache = { data: snapshot, ts: Date.now() };
-  return snapshot;
 }
 
 // Compact product list — cached 30s
@@ -307,30 +328,37 @@ export async function getProductCatalogForAI(limit = 120) {
     return _catalogCache.data;
   }
 
-  const products = await db.product.findMany({
-    take: limit,
-    orderBy: { updatedAt: "desc" },
-    include: {
-      category: { select: { name: true } },
-      location: { select: { code: true } },
-    },
-  });
-  const catalog = products.map((p) => ({
-    id: p.id,
-    name: p.name,
-    brand: p.brand,
-    oem: p.oemNumber,
-    bikes: p.bikeModels,
-    category: p.category?.name || "",
-    location: p.location?.code || "",
-    qty: p.quantity,
-    minStock: p.minStock,
-    purchasePrice: p.purchasePrice,
-    sellingPrice: p.sellingPrice,
-    supplier: p.supplier,
-    lastSoldAt: p.lastSoldAt?.toISOString() || null,
-  }));
+  try {
+    const products = await db.product.findMany({
+      take: limit,
+      orderBy: { updatedAt: "desc" },
+      include: {
+        category: { select: { name: true } },
+        location: { select: { code: true } },
+      },
+    });
+    const catalog = products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      brand: p.brand,
+      oem: p.oemNumber,
+      bikes: p.bikeModels,
+      category: p.category?.name || "",
+      location: p.location?.code || "",
+      qty: p.quantity,
+      minStock: p.minStock,
+      purchasePrice: p.purchasePrice,
+      sellingPrice: p.sellingPrice,
+      supplier: p.supplier,
+      lastSoldAt: p.lastSoldAt?.toISOString() || null,
+    }));
 
-  _catalogCache = { data: catalog, ts: Date.now() };
-  return catalog;
+    _catalogCache = { data: catalog, ts: Date.now() };
+    return catalog;
+  } catch (e) {
+    // DB unavailable — return empty catalog
+    console.warn("getProductCatalogForAI: DB unavailable, returning empty.", (e as Error)?.message?.slice(0, 100));
+    _catalogCache = { data: [], ts: Date.now() - CATALOG_TTL_MS + 10_000 };
+    return [];
+  }
 }

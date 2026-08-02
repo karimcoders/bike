@@ -59,13 +59,17 @@ Rules:
       history: histMsgs,
     });
 
-    // Save to DB
-    await db.chatMessage.create({
-      data: { userId: user.id, role: "user", content: message },
-    });
-    await db.chatMessage.create({
-      data: { userId: user.id, role: "assistant", content: reply },
-    });
+    // Save to DB (non-blocking — don't fail the chat if DB is unavailable)
+    try {
+      await db.chatMessage.create({
+        data: { userId: user.id, role: "user", content: message },
+      });
+      await db.chatMessage.create({
+        data: { userId: user.id, role: "assistant", content: reply },
+      });
+    } catch (dbErr) {
+      console.warn("Chat history save failed (DB unavailable?), skipping.", (dbErr as Error)?.message?.slice(0, 80));
+    }
 
     return ok({ reply, provider, intentType });
   } catch (e) {
