@@ -1,33 +1,93 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { err, handleAuthError, ok } from "@/lib/api";
+import { NextResponse } from "next/server";
+
+// Cache the dashboard response in the browser for 30s (with SWR up to 5 min).
+// Authenticated + cookie-scoped, so it's safe to cache privately.
+function cachedOk(data: unknown, status = 200) {
+  return NextResponse.json(data, {
+    status,
+    headers: {
+      "Cache-Control": "private, max-age=30, stale-while-revalidate=300",
+    },
+  });
+}
 
 export async function GET() {
   try {
     await requireUser();
 
-    const products = await db.product.findMany({
-      include: { category: true, location: true },
-    });
+    // ---- Optimized: use DB aggregation instead of loading every product ----
+    // Old code did findMany({ include: { category, location } }) on ALL products
+    // just to count/sum — that loaded the entire inventory on every dashboard
+    // load. Now we run cheap aggregate/count queries + only fetch the handful
+    // of rows we actually need for display lists.
+    const [
+      countAgg,
+      outOfStockCount,
+      occupiedLocationsCount,
+      categories,
+      locations,
+    ] = await Promise.all([
+      db.product.aggregate({ _count: true, _sum: { quantity: true } }),
+      db.product.count({ where: { quantity: { lte: 0 } } }),
+      db.product.count({ where: { locationId: { not: null } } }),
+      db.category.count(),
+      db.location.count(),
+    ]);
 
-    const totalProducts = products.length;
-    const totalQuantity = products.reduce((s, p) => s + p.quantity, 0);
-    const outOfStock = products.filter((p) => p.quantity <= 0);
-    const lowStock = products.filter(
-      (p) => p.quantity > 0 && p.quantity <= p.minStock
-    );
-    const stockValue = products.reduce(
+    // Fetch the small lists we need for display (capped, with joins).
+    // priceRows is the only "all products" read — but only 3 columns, no joins.
+    const [outOfStock, lowStockRows, recentProducts, recentMovements, priceRows] =
+      await Promise.all([
+        db.product.findMany({
+          where: { quantity: { lte: 0 } },
+          include: { category: true, location: true },
+          take: 50,
+          orderBy: { updatedAt: "desc" },
+        }),
+        // Low-stock: quantity > 0 and <= minStock — needs a where on minStock
+        // comparison, which Prisma can't express directly on SQLite. We fetch
+        // only the columns we need for the small set that's potentially low.
+        db.product.findMany({
+          where: { quantity: { gt: 0, lte: 15 } },
+          select: { id: true, name: true, brand: true, quantity: true, minStock: true, sellingPrice: true, category: { select: { name: true } }, location: { select: { code: true } } },
+          take: 50,
+        }),
+        db.product.findMany({
+          include: { category: true, location: true },
+          orderBy: { createdAt: "desc" },
+          take: 5,
+        }),
+        db.movement.findMany({
+          orderBy: { createdAt: "desc" },
+          take: 8,
+          include: {
+            product: { select: { id: true, name: true } },
+            user: { select: { name: true } },
+          },
+        }),
+        // Only qty + prices for stock value calc (3 cols, no joins — cheap)
+        db.product.findMany({
+          select: { quantity: true, sellingPrice: true, purchasePrice: true },
+        }),
+      ]);
+
+    const lowStock = lowStockRows.filter((p) => p.quantity <= p.minStock);
+    const totalProducts = countAgg._count;
+    const totalQuantity = countAgg._sum.quantity || 0;
+
+    // Stock value: sum(quantity * price). Prisma can't multiply in aggregate,
+    // so we compute in JS from the lightweight priceRows query above.
+    const stockValue = priceRows.reduce(
       (s, p) => s + p.quantity * p.sellingPrice,
       0
     );
-    const purchaseValue = products.reduce(
+    const purchaseValue = priceRows.reduce(
       (s, p) => s + p.quantity * p.purchasePrice,
       0
     );
-
-    const categories = await db.category.count();
-    const locations = await db.location.count();
-    const occupiedLocations = products.filter((p) => p.locationId).length;
 
     // Today's activity (movements today)
     const startOfDay = new Date();
@@ -62,8 +122,7 @@ export async function GET() {
     const todayUpiTotal = todaySales.reduce((s, x) => s + x.upiAmount, 0);
     const todayCreditTotal = todaySales.reduce((s, x) => s + x.creditAmount, 0);
 
-    // Total outstanding (all customers) — compute manually to avoid Prisma
-    // aggregate type issues with newly added Float fields
+    // Total outstanding (all customers)
     const allCustomers = await db.customer.findMany({
       select: { outstanding: true, advance: true },
     });
@@ -72,44 +131,34 @@ export async function GET() {
       0
     );
 
-    // Recent added products (last 5)
-    const recentProducts = [...products]
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, 5);
-
-    // Recent movements (last 8)
-    const recentMovements = await db.movement.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 8,
-      include: {
-        product: { select: { id: true, name: true } },
-        user: { select: { name: true } },
-      },
+    // Category breakdown via groupBy (one DB round instead of loading all products)
+    const grouped = await db.product.groupBy({
+      by: ["categoryId"],
+      _count: true,
+      _sum: { quantity: true },
     });
+    const catIds = grouped.map((g) => g.categoryId).filter(Boolean) as string[];
+    const cats = catIds.length
+      ? await db.category.findMany({ where: { id: { in: catIds } }, select: { id: true, name: true } })
+      : [];
+    const catNameById = new Map(cats.map((c) => [c.id, c.name]));
+    const categoryBreakdown = grouped.map((g) => ({
+      name: (g.categoryId && catNameById.get(g.categoryId)) || "Uncategorized",
+      count: g._count,
+      quantity: g._sum.quantity || 0,
+    })).sort((a, b) => b.count - a.count);
 
-    // Category breakdown
-    const categoryBreakdown = products.reduce<
-      Record<string, { name: string; count: number; quantity: number }>
-    >((acc, p) => {
-      const name = p.category?.name || "Uncategorized";
-      if (!acc[name])
-        acc[name] = { name, count: 0, quantity: 0 };
-      acc[name].count += 1;
-      acc[name].quantity += p.quantity;
-      return acc;
-    }, {});
-
-    return ok({
+    return cachedOk({
       stats: {
         totalProducts,
         totalQuantity,
-        outOfStockCount: outOfStock.length,
+        outOfStockCount,
         lowStockCount: lowStock.length,
         stockValue,
         purchaseValue,
         categories,
         locations,
-        occupiedLocations,
+        occupiedLocations: occupiedLocationsCount,
         stockInToday,
         stockOutToday,
         todaySalesCount,
@@ -125,9 +174,7 @@ export async function GET() {
       recentProducts,
       recentMovements,
       recentSales: todaySales,
-      categoryBreakdown: Object.values(categoryBreakdown).sort(
-        (a, b) => b.count - a.count
-      ),
+      categoryBreakdown,
     });
   } catch (e) {
     const authErr = handleAuthError(e);

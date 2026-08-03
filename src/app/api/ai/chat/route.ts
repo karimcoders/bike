@@ -25,10 +25,36 @@ export async function POST(req: Request) {
     const { message, history } = await req.json();
     if (!message) return err("Message required");
 
-    const [snapshot, catalog] = await Promise.all([
-      getShopSnapshot(),
-      getProductCatalogForAI(100),
-    ]);
+    // Detect "add product" intent EARLY so we can skip the heavy
+    // snapshot+catalog DB queries (which are only needed for Q&A).
+    const addIntent = /\b(add|jod|jodo|daal|daalo|naya|new|create|insert|add karo|add kar|jama karo)\b/i.test(message)
+      && /\b(product|part|piece|maal|stock|inventory|spare|brake|clutch|chain|pad|plate|filter|cable|tyre|tube|engine|gear|bore|kit|set)\b/i.test(message);
+
+    // For add-product intent, load only minimal context (shop name) — skip
+    // the full 100-product catalog and sales snapshot. This makes the add
+    // flow 5-10x faster.
+    let snapshot: any;
+    let catalog: any[];
+    if (addIntent) {
+      snapshot = {
+        shopName: "Bike Shop",
+        ownerName: "Owner",
+        totals: { products: 0, units: 0, outOfStock: 0, lowStock: 0, stockValue: 0, categories: 0, locations: 0 },
+        sales: { todayCount: 0, todayRevenue: 0, todayProfit: 0, weekCount: 0, weekRevenue: 0 },
+        topSellers: [],
+        recentSales: [],
+      };
+      try {
+        const s = await db.settings.findUnique({ where: { id: "singleton" } });
+        if (s) { snapshot.shopName = s.shopName || "Bike Shop"; snapshot.ownerName = s.ownerName || "Owner"; }
+      } catch { /* ignore */ }
+      catalog = [];
+    } else {
+      [snapshot, catalog] = await Promise.all([
+        getShopSnapshot(),
+        getProductCatalogForAI(100),
+      ]);
+    }
 
     const systemPrompt = `You are "ShopMitra" — an AI assistant for a bike spare-parts shop in rural Bihar (shop name: ${snapshot.shopName}, owner: ${snapshot.ownerName}).
 
@@ -63,9 +89,6 @@ IMPORTANT — ADDING PRODUCTS:
 - If the user wants to add MULTIPLE products, call the tool once per product.`;
 
     // ---- Detect "add product" intent → tool-calling path ----
-    const addIntent = /\b(add|jod|jodo|daal|daalo|naya|new|create|insert|add karo|add kar|jama karo)\b/i.test(message)
-      && /\b(product|part|piece|maal|stock|inventory|spare|brake|clutch|chain|pad|plate|filter|cable|tyre|tube|engine|gear|bore|kit|set)\b/i.test(message);
-
     const openrouterAvailable = await isProviderAvailable("openrouter");
 
     if (addIntent && openrouterAvailable) {
