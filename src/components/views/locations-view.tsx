@@ -908,7 +908,7 @@ function DeleteConfirmDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Box {name} ko delete karna hai?
+            {name} ko delete karna hai?
           </AlertDialogTitle>
           <AlertDialogDescription>
             Ye box khaali hai. Delete karne ke baad ye wapas nahi aayega. Agar
@@ -961,7 +961,7 @@ function BulkDeleteButton({
           const list = skipped
             .map(
               (s) =>
-                `Box ${displayLocation(s.code)} me ${s.productCount} products hain`
+                `${displayLocation(s.code)} me ${s.productCount} products hain`
             )
             .join("\n");
           toast.warning(`Ye boxes skip hue:\n${list}`, { duration: 6000 });
