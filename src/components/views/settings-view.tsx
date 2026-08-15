@@ -1439,8 +1439,8 @@ function DemoCleanupSection() {
         body: JSON.stringify({ preview: true }),
       });
       const json = await res.json();
-      if (json?.success) {
-        setPreview(json.data);
+      if (json?.counts) {
+        setPreview(json);
         setOpen(true);
       } else {
         toast.error(json?.error || "Preview nahi hua");
@@ -1461,8 +1461,8 @@ function DemoCleanupSection() {
         body: JSON.stringify({ preview: false }),
       });
       const json = await res.json();
-      if (json?.success) {
-        const d = json.data.deleted;
+      if (json?.deleted) {
+        const d = json.deleted;
         toast.success(
           `Demo data hata diya: ${d.products} products, ${d.customers} customers, ${d.sales} sales, ${d.locations} locations${d.settings ? " + settings reset" : ""}`,
           { duration: 6000 }
