@@ -62,6 +62,8 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  AlertTriangle,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SafeImage } from "@/components/ui/safe-image";
@@ -1415,6 +1417,231 @@ function BackupSection({ s }: { s: Settings }) {
 }
 
 // ===================== Main view =====================
+// ---- Demo Data Cleanup ----
+// Lets the owner safely remove the old seed/demo data (20 demo products,
+// 4 demo customers, demo sales, demo locations, demo settings) that was
+// created by the OLD seed.ts before it was cleaned up. Identifies demo
+// records by EXACT identifiers (OEM numbers, name+phone, location codes)
+// so it can NEVER match real owner data.
+function DemoCleanupSection() {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [preview, setPreview] = useState<any>(null);
+
+  const runPreview = async () => {
+    setLoading(true);
+    setPreview(null);
+    try {
+      const res = await fetch("/api/admin/cleanup-demo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preview: true }),
+      });
+      const json = await res.json();
+      if (json?.success) {
+        setPreview(json.data);
+        setOpen(true);
+      } else {
+        toast.error(json?.error || "Preview nahi hua");
+      }
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runDelete = async () => {
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/admin/cleanup-demo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preview: false }),
+      });
+      const json = await res.json();
+      if (json?.success) {
+        const d = json.data.deleted;
+        toast.success(
+          `Demo data hata diya: ${d.products} products, ${d.customers} customers, ${d.sales} sales, ${d.locations} locations${d.settings ? " + settings reset" : ""}`,
+          { duration: 6000 }
+        );
+        setOpen(false);
+        setPreview(null);
+        // Reload to refresh all cached queries (products, customers, etc).
+        setTimeout(() => window.location.reload(), 1200);
+      } else {
+        toast.error(json?.error || "Delete fail");
+      }
+    } catch {
+      toast.error("Network error");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const counts = preview?.counts;
+  const hasDemo =
+    counts &&
+    (counts.products > 0 ||
+      counts.customers > 0 ||
+      counts.sales > 0 ||
+      counts.locations > 0 ||
+      counts.settings > 0);
+
+  return (
+    <Card className="shadow-soft border-destructive/30">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <AlertTriangle className="size-4 text-destructive" />
+          Demo Data Cleanup
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          App me purana demo/seed data (sample products, demo customers,
+          demo sales) pad sakta hai. Ye button sirf DEMO records identify
+          karega (exact OEM numbers se) aur unhe hata dega. Aapke REAL
+          products/customers/sales kabhi nahi honge.
+        </p>
+        <Button
+          variant="outline"
+          className="w-full h-11 rounded-xl border-destructive/40 text-destructive hover:bg-destructive/10"
+          onClick={runPreview}
+          disabled={loading}
+        >
+          {loading ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Search className="size-4" />
+          )}
+          {loading ? "Check ho raha hai…" : "Demo Data Check Karein"}
+        </Button>
+
+        <Dialog open={open} onOpenChange={(v) => !v && setOpen(false)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="size-5 text-destructive" />
+                Demo Data Preview
+              </DialogTitle>
+              <DialogDescription>
+                Ye records delete honge. Real data bilkul safe rahega.
+              </DialogDescription>
+            </DialogHeader>
+
+            {!hasDemo ? (
+              <div className="rounded-xl bg-emerald-500/10 p-4 text-center">
+                <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                  Koi demo data nahi mila! ✅
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Aapka database already clean hai.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[50vh] overflow-y-auto scroll-thin">
+                {/* Summary counts */}
+                <div className="grid grid-cols-2 gap-2">
+                  <CountBox label="Products" n={counts.products} />
+                  <CountBox label="Customers" n={counts.customers} />
+                  <CountBox label="Sales" n={counts.sales} />
+                  <CountBox label="Locations" n={counts.locations} />
+                </div>
+                {counts.settings > 0 && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    ⚠ Demo shop settings ("Sharma Bike Parts") bhi reset honge.
+                  </p>
+                )}
+
+                {/* Product details */}
+                {preview?.detail?.products?.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold mb-1">Demo Products:</p>
+                    <div className="space-y-1">
+                      {preview.detail.products.map((p: any) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center justify-between rounded-lg bg-muted/50 px-2 py-1 text-xs"
+                        >
+                          <span className="truncate">{p.name}</span>
+                          <span className="font-mono text-muted-foreground">
+                            {p.oem}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Customer details */}
+                {preview?.detail?.customers?.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold mb-1">Demo Customers:</p>
+                    <div className="space-y-1">
+                      {preview.detail.customers.map((c: any) => (
+                        <div
+                          key={c.id}
+                          className="flex items-center justify-between rounded-lg bg-muted/50 px-2 py-1 text-xs"
+                        >
+                          <span>{c.name}</span>
+                          <span className="text-muted-foreground">
+                            {c.phone || "(no phone)"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="rounded-xl"
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                className="rounded-xl"
+                onClick={runDelete}
+                disabled={!hasDemo || deleting}
+              >
+                {deleting ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Trash2 className="size-4" />
+                )}
+                {deleting ? "Deleting…" : "Delete Demo Data"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CountBox({ label, n }: { label: string; n: number }) {
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-3 text-center",
+        n > 0
+          ? "border-destructive/30 bg-destructive/5"
+          : "border-border bg-muted/30"
+      )}
+    >
+      <p className="text-2xl font-bold">{n}</p>
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+
 export function SettingsView() {
   const { data, isLoading } = useSettings();
   const { user } = useUI();
@@ -1519,7 +1746,10 @@ export function SettingsView() {
       {/* 8. Backup */}
       <BackupSection s={s} />
 
-      {/* 9. Account */}
+      {/* 9. Demo Data Cleanup (ADMIN only) */}
+      {isAdmin && <DemoCleanupSection />}
+
+      {/* 10. Account */}
       <Card className="shadow-soft">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">

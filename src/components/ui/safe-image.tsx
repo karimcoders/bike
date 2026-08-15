@@ -24,6 +24,10 @@ interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, "src"
   placeholder?: React.ReactNode;
   /** CSS class applied to the placeholder wrapper */
   placeholderClassName?: string;
+  /** Delivery size hint — only affects Cloudinary URLs.
+   *  thumb = 200px (product cards), medium = 600px (detail), large = 1200px.
+   *  Non-Cloudinary URLs are unaffected. */
+  size?: "thumb" | "medium" | "large";
 }
 
 // ---- Inner component that owns the errored flag for a given src ----
@@ -65,6 +69,39 @@ function ImgWithRetry({
   );
 }
 
+// ---- Cloudinary delivery optimization ----
+// For Cloudinary URLs we inject a transformation segment so the browser
+// downloads a tiny, format-optimized image (WebP/AVIF auto-negotiated)
+// instead of the full-size original. This is the single biggest image
+// perf win for product grids: a 5 MB original → ~15 KB thumbnail.
+//
+// URL shape:  https://res.cloudinary.com/<cloud>/image/upload/<version>/<id>.jpg
+// Transformed: https://res.cloudinary.com/<cloud>/image/upload/w_200,q_auto,f_auto/<version>/<id>.jpg
+//
+// We only touch URLs that contain "/image/upload/" — everything else
+// (local /api/uploads, data:, blob:) is left untouched.
+const CLOUDINARY_TRANSFORMS: Record<string, string> = {
+  thumb: "w_220,h_220,c_fill,q_auto,f_auto",
+  medium: "w_600,q_auto,f_auto",
+  large: "w_1200,q_auto,f_auto",
+};
+
+export function cloudifyUrl(src: string, size: "thumb" | "medium" | "large" = "medium"): string {
+  if (!src) return src;
+  // Only transform Cloudinary URLs.
+  if (!src.includes("res.cloudinary.com")) return src;
+  if (!src.includes("/image/upload/")) return src;
+  const seg = CLOUDINARY_TRANSFORMS[size] || CLOUDINARY_TRANSFORMS.medium;
+  const afterUpload = src.split("/image/upload/")[1] || "";
+  // If the segment after /upload/ starts with "v"+digit (e.g. "v1234567/..."),
+  // it's a version segment → no transformation present yet → inject one.
+  // Otherwise it already has a transformation (e.g. "w_300,.../...") → leave it.
+  if (/^v\d/.test(afterUpload)) {
+    return src.replace("/image/upload/", `/image/upload/${seg}/`);
+  }
+  return src;
+}
+
 // ---- URL normalization ----
 // Old DB entries store /uploads/... (static file path). New entries store
 // /api/uploads/... (API route). When accessed through a preview panel /
@@ -90,6 +127,7 @@ export function SafeImage({
   placeholder,
   placeholderClassName = "flex items-center justify-center w-full h-full",
   className,
+  size = "medium",
   ...imgProps
 }: SafeImageProps) {
   // No src → placeholder immediately (no inner component needed)
@@ -101,8 +139,9 @@ export function SafeImage({
     );
   }
 
-  // Normalize old /uploads/... paths to /api/uploads/... for proxy compat
-  const normalizedSrc = normalizeSrc(src);
+  // Normalize old /uploads/... paths to /api/uploads/... for proxy compat,
+  // then apply Cloudinary delivery transformation if the URL is on Cloudinary.
+  const normalizedSrc = cloudifyUrl(normalizeSrc(src), size);
 
   // key={src} forces a FULL remount of the inner img whenever src changes.
   // This is the bulletproof way to clear any internal state (including any

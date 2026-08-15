@@ -9,6 +9,8 @@ import {
   useSales,
   useSettings,
   useReceiptMessage,
+  useRecognizeProduct,
+  fileToDataUrl,
 } from "@/lib/queries";
 import { useUI } from "@/lib/store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,6 +36,7 @@ import {
 import { StockBadge } from "@/components/stock-badge";
 import { SafeImage } from "@/components/ui/safe-image";
 import { BillReceipt } from "@/components/receipt/bill-receipt";
+import { BarcodeScanner } from "@/components/barcode-scanner";
 import { getPrimaryPhoto, type Product, type Sale, type Settings, type PaymentMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -77,6 +80,9 @@ import {
   Check,
   Percent,
   AlertCircle,
+  ScanLine,
+  Camera,
+  Sparkles,
 } from "lucide-react";
 
 function formatINR(n: number) {
@@ -967,6 +973,36 @@ function BillDialog({
 }
 
 // ---- Main SalesView ----
+// Match an AI-recognized product against EXISTING inventory.
+// Returns 0, 1 or many products so the UI can auto-add or show choices.
+// AI must NEVER invent a new product during billing — it only finds real
+// stock the owner already added.
+function matchInventory(rec: any, products: Product[]): Product[] {
+  const name = (rec?.name || "").toLowerCase().trim();
+  const brand = (rec?.brand || "").toLowerCase().trim();
+  const oem = (rec?.oemNumber || "").toLowerCase().trim();
+  if (!name) return [];
+  // 1. Exact OEM match (strongest signal)
+  if (oem) {
+    const exact = products.filter(
+      (p) => (p.oemNumber || "").toLowerCase() === oem
+    );
+    if (exact.length) return exact;
+  }
+  // 2. Name contains / contained-by (handles "Brake Shoe Set" vs "Brake Shoe")
+  const byName = products.filter((p) => {
+    const pn = p.name.toLowerCase();
+    return pn.includes(name) || name.includes(pn);
+  });
+  if (brand) {
+    const withBrand = byName.filter((p) =>
+      (p.brand || "").toLowerCase().includes(brand)
+    );
+    if (withBrand.length) return withBrand;
+  }
+  return byName;
+}
+
 export function SalesView() {
   const { data: prodData, isLoading: prodLoading } = useAllProducts();
   const { data: custData, isLoading: custLoading } = useCustomers();
@@ -992,6 +1028,13 @@ export function SalesView() {
   // -1 = none selected; 0..n = highlighted item. ArrowDown/ArrowUp move it,
   // Enter adds the highlighted item to cart, Escape clears the query.
   const [activeIdx, setActiveIdx] = useState(-1);
+
+  // ---- Barcode + AI scanning state ----
+  const recognize = useRecognizeProduct();
+  const [scanOpen, setScanOpen] = useState(false);
+  const [aiRecognizing, setAiRecognizing] = useState(false);
+  const [aiMatches, setAiMatches] = useState<Product[] | null>(null);
+  const aiPhotoRef = useRef<HTMLInputElement>(null);
 
   // Payment + Bill state
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -1064,6 +1107,88 @@ export function SalesView() {
     });
     setQuery("");
     setActiveIdx(-1);
+  };
+
+  // ---- Barcode scan: find product by code, add to cart ----
+  // Tries exact barcode → exact OEM → OEM partial. If nothing matches,
+  // drops the code into the search box so the owner can pick manually.
+  const findProductByCode = (code: string): Product | null => {
+    const c = code.trim().toLowerCase();
+    if (!c) return null;
+    let p = products.find((x) => (x.barcode || "").toLowerCase() === c);
+    if (p) return p;
+    p = products.find((x) => (x.oemNumber || "").toLowerCase() === c);
+    if (p) return p;
+    p = products.find(
+      (x) =>
+        !!x.oemNumber &&
+        (x.oemNumber.toLowerCase().includes(c) ||
+          c.includes(x.oemNumber.toLowerCase()))
+    );
+    return p || null;
+  };
+
+  const handleBarcodeDetected = (code: string) => {
+    const p = findProductByCode(code);
+    if (p) {
+      addToCart(p);
+      toast.success(`${p.name} cart me add hua`);
+    } else {
+      toast.error(
+        `Barcode "${code}" se koi product nahi mila. Search se add karein.`,
+        { duration: 5000 }
+      );
+      setQuery(code);
+    }
+  };
+
+  // ---- AI photo scan: recognize → match EXISTING inventory → add ----
+  // AI must search existing inventory first. It must NOT invent a new
+  // product during billing. Exact match → add. Multiple → chooser.
+  // None → friendly message (no phantom product).
+  const handleAiScanPhoto = async (file: File) => {
+    if (aiRecognizing) return;
+    setAiRecognizing(true);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      recognize.mutate(
+        { image: dataUrl },
+        {
+          onSuccess: (resp: any) => {
+            const rec = resp?.recognized;
+            if (!rec || !rec.name) {
+              toast.error(
+                "AI se product identify nahi hua. Manual search use karein."
+              );
+              setAiRecognizing(false);
+              return;
+            }
+            const matches = matchInventory(rec, products);
+            if (matches.length === 1) {
+              addToCart(matches[0]);
+              toast.success(`${matches[0].name} cart me add hua (AI match)`);
+              setAiRecognizing(false);
+            } else if (matches.length > 1) {
+              setAiMatches(matches);
+              setAiRecognizing(false);
+            } else {
+              toast.error(
+                `AI ne "${rec.name}" pehchana par inventory me nahi hai. Pehle product add karein.`,
+                { duration: 6000 }
+              );
+              setAiRecognizing(false);
+            }
+          },
+          onError: () => {
+            toast.error("AI scan fail hua. Manual search use karein.");
+            setAiRecognizing(false);
+          },
+        }
+      );
+    } catch {
+      toast.error("Photo padhne mein error");
+      setAiRecognizing(false);
+    }
   };
 
   const updateQty = (id: string, delta: number) => {
@@ -1285,6 +1410,37 @@ export function SalesView() {
                       : `${filtered.length} popular`}
                   </span>
                 )}
+              </div>
+              {/* Scan buttons — barcode camera + AI photo.
+                  These let the owner add products WITHOUT typing: scan a
+                  barcode with the camera, or snap a photo and let AI find
+                  the matching product already in inventory. */}
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-xl border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => setScanOpen(true)}
+                >
+                  <ScanLine className="size-5" /> Scan Barcode
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 rounded-xl border-primary/40 text-primary hover:bg-primary/10"
+                  onClick={() => aiPhotoRef.current?.click()}
+                  disabled={aiRecognizing}
+                >
+                  {aiRecognizing ? (
+                    <>
+                      <Loader2 className="size-5 animate-spin" /> AI soch raha…
+                    </>
+                  ) : (
+                    <>
+                      <Camera className="size-5" /> AI Photo Scan
+                    </>
+                  )}
+                </Button>
               </div>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
@@ -1722,6 +1878,80 @@ export function SalesView() {
         }}
         onNewSale={handleNewSale}
       />
+
+      {/* ---- Barcode Camera Scanner ---- */}
+      <BarcodeScanner
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onDetected={handleBarcodeDetected}
+      />
+
+      {/* ---- Hidden AI photo input (camera capture on mobile) ---- */}
+      <input
+        ref={aiPhotoRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleAiScanPhoto(f);
+          e.target.value = "";
+        }}
+      />
+
+      {/* ---- AI scan: multiple inventory matches chooser ---- */}
+      <Dialog open={!!aiMatches} onOpenChange={(v) => !v && setAiMatches(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="size-5 text-primary" /> AI se multiple match mile
+            </DialogTitle>
+            <DialogDescription>
+              Kaun sa product cart me add karein?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-80 overflow-y-auto scroll-thin">
+            {aiMatches?.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  addToCart(p);
+                  toast.success(`${p.name} cart me add hua`);
+                  setAiMatches(null);
+                }}
+                className="flex w-full items-center gap-3 rounded-xl border border-border p-3 text-left hover:bg-accent transition-colors"
+              >
+                <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">
+                  <SafeImage
+                    src={getPrimaryPhoto(p.photo)}
+                    alt={p.name}
+                    className="size-full object-cover"
+                    placeholder={<Package className="size-5 text-muted-foreground" />}
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">{p.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {p.brand} · {p.oemNumber}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-primary">
+                    {formatINR(p.sellingPrice)}
+                  </p>
+                  <StockBadge
+                    quantity={p.quantity}
+                    minStock={p.minStock}
+                    showLabel={false}
+                    className="text-[10px]"
+                  />
+                </div>
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

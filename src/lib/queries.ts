@@ -418,10 +418,13 @@ function validateImageFile(file: File): string | null {
     return `Sirf JPG, PNG, WebP allowed hai. Mila: ${file.type || "unknown"}`;
   }
   if (file.size === 0) return "File khali hai";
-  if (file.size > 5 * 1024 * 1024) {
+  // Max 15 MB for the ORIGINAL — we resize client-side before upload, so a
+  // 15 MB camera photo becomes ~300 KB on the wire. This lets owners upload
+  // full-resolution phone photos without hitting a size wall.
+  if (file.size > 15 * 1024 * 1024) {
     return `File bahut bada (${(file.size / 1024 / 1024).toFixed(
       1
-    )} MB). Max 5 MB.`;
+    )} MB). Max 15 MB.`;
   }
   return null;
 }
@@ -441,60 +444,134 @@ export function useUpload() {
         throw new Error(validationError);
       }
 
-      const fd = new FormData();
-      fd.append("file", file);
+      // ---- Client-side resize BEFORE upload ----
+      // A 5-8 MB camera photo → ~200 KB JPEG. This is the single biggest
+      // perf win: uploads finish in <1s even on slow rural connections,
+      // and Vercel serverless never buffers a huge file.
+      const keepPng = folder === "logos" || folder === "qr";
+      const resized = await resizeImageClient(file, { keepPng });
 
-      // Use XMLHttpRequest so we can report real upload progress.
-      // fetch() has no native upload progress in browsers.
-      return new Promise<{ url: string }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", `/api/upload?folder=${encodeURIComponent(folder)}`);
-
-        xhr.upload.onprogress = (ev) => {
-          if (ev.lengthComputable && onProgress) {
-            onProgress(Math.round((ev.loaded / ev.total) * 100));
+      // ---- Try DIRECT browser → Cloudinary upload (signed) ----
+      // Bypasses the Vercel serverless function entirely for the file
+      // transfer. One hop, no serverless memory pressure, no 10s timeout.
+      try {
+        const signRes = await fetch(
+          `/api/cloudinary/sign?folder=${encodeURIComponent(folder)}`
+        );
+        if (signRes.ok) {
+          const signJson = await signRes.json();
+          const signData = signJson?.data;
+          if (signData?.configured && signData?.uploadUrl) {
+            return await uploadToCloudinaryDirect(resized, signData, onProgress);
           }
-        };
+        }
+      } catch {
+        // Sign endpoint failed — fall through to server upload.
+      }
 
-        xhr.onload = () => {
-          // Always read body as text first — never assume JSON
-          const text = xhr.responseText || "";
-          let data: any = null;
-          if (text) {
-            try {
-              data = JSON.parse(text);
-            } catch {
-              // Non-JSON response (e.g. HTML error page from Vercel on
-              // serverless timeout/crash, or a 404 HTML page if the route
-              // is missing). NEVER surface raw HTML to the user — show a
-              // clean Hinglish message instead.
-              reject(
-                new Error(
-                  `Upload fail ho gaya (HTTP ${xhr.status}). Thodi der baad try karein.`
-                )
-              );
-              return;
-            }
-          }
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (data?.url) {
-              resolve({ url: data.url });
-            } else {
-              reject(new Error(data?.error || "Upload failed — no URL"));
-            }
-          } else {
-            reject(new Error(data?.error || `Upload failed (HTTP ${xhr.status})`));
-          }
-        };
-
-        xhr.onerror = () =>
-          reject(new Error("Network error — internet connection check karein"));
-        xhr.ontimeout = () => reject(new Error("Upload timeout — dobara try karein"));
-
-        xhr.send(fd);
-      });
+      // ---- Fallback: server-side upload via /api/upload ----
+      // Used when Cloudinary env vars are not set (local dev / sandbox).
+      return uploadViaServer(resized, folder, onProgress);
     },
     onError: (e: any) => toast.error(e.message || "Upload fail"),
+  });
+}
+
+// ---- Direct browser → Cloudinary upload (signed) ----
+// POST multipart/form-data to Cloudinary's REST API with a signature
+// obtained from /api/cloudinary/sign. Returns { url: secure_url }.
+async function uploadToCloudinaryDirect(
+  file: File,
+  sign: {
+    uploadUrl: string;
+    apiKey: string;
+    timestamp: number;
+    signature: string;
+    folder: string;
+  },
+  onProgress?: (pct: number) => void
+): Promise<{ url: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("folder", sign.folder);
+  fd.append("timestamp", String(sign.timestamp));
+  fd.append("api_key", sign.apiKey);
+  fd.append("signature", sign.signature);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", sign.uploadUrl);
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && onProgress) {
+        onProgress(Math.round((ev.loaded / ev.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      let data: any = null;
+      try {
+        data = JSON.parse(xhr.responseText || "");
+      } catch {
+        /* non-JSON */
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && data?.secure_url) {
+        resolve({ url: data.secure_url });
+      } else {
+        reject(
+          new Error(
+            data?.error?.message ||
+              `Cloudinary upload fail (HTTP ${xhr.status}). Thodi der baad try karein.`
+          )
+        );
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error("Network error — internet connection check karein"));
+    xhr.ontimeout = () => reject(new Error("Upload timeout — dobara try karein"));
+    xhr.send(fd);
+  });
+}
+
+// ---- Fallback: server-side upload via /api/upload ----
+async function uploadViaServer(
+  file: File,
+  folder: string,
+  onProgress?: (pct: number) => void
+): Promise<{ url: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/upload?folder=${encodeURIComponent(folder)}`);
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && onProgress) {
+        onProgress(Math.round((ev.loaded / ev.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      const text = xhr.responseText || "";
+      let data: any = null;
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          reject(
+            new Error(
+              `Upload fail ho gaya (HTTP ${xhr.status}). Thodi der baad try karein.`
+            )
+          );
+          return;
+        }
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && data?.url) {
+        resolve({ url: data.url });
+      } else {
+        reject(new Error(data?.error || `Upload failed (HTTP ${xhr.status})`));
+      }
+    };
+    xhr.onerror = () =>
+      reject(new Error("Network error — internet connection check karein"));
+    xhr.ontimeout = () => reject(new Error("Upload timeout — dobara try karein"));
+    xhr.send(fd);
   });
 }
 
@@ -506,6 +583,63 @@ export function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("File padhne mein error"));
     reader.readAsDataURL(file);
   });
+}
+
+// ---- Client-side image resize ----
+// Camera photos can be 4-8 MB. Resizing to max 1200px wide + JPEG 0.85
+// before upload shrinks them to ~150-300 KB — 10-20x faster uploads and
+// no serverless memory pressure. Returns a File (so it has a name/type).
+//
+// Uses createImageBitmap + canvas (supported in all modern browsers).
+// If anything fails, returns the original file unchanged (graceful).
+export async function resizeImageClient(
+  file: File,
+  opts?: { maxDim?: number; quality?: number; keepPng?: boolean }
+): Promise<File> {
+  const maxDim = opts?.maxDim ?? 1200;
+  const quality = opts?.quality ?? 0.85;
+  const keepPng = opts?.keepPng ?? false;
+
+  // Never touch GIFs (would break animation) or SVGs (vector).
+  if (file.type === "image/gif" || file.type === "image/svg+xml") return file;
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    let { width, height } = bitmap;
+    const needsResize = width > maxDim || height > maxDim;
+    // For product photos we re-encode to JPEG (smaller, no transparency
+    // needed). For logos/QR we keep PNG to preserve transparency.
+    const toJpeg = file.type !== "image/png" || !keepPng;
+
+    // Nothing to do — already small AND keeping original format.
+    if (!needsResize && !toJpeg) return file;
+
+    if (needsResize) {
+      const scale = Math.min(maxDim / width, maxDim / height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, width, height);
+
+    const mime = toJpeg ? "image/jpeg" : file.type;
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, mime, quality)
+    );
+    if (!blob) return file;
+
+    const baseName = file.name.replace(/\.\w+$/, "");
+    const ext = toJpeg ? ".jpg" : file.name.match(/\.\w+$/)?.[0] || "";
+    return new File([blob], baseName + ext, { type: mime });
+  } catch {
+    // createImageBitmap not supported or decode failed — upload original.
+    return file;
+  }
 }
 
 // Helper: validate an image file client-side (returns error message or null)
