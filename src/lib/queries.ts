@@ -303,6 +303,63 @@ export function useDeleteLocation() {
   });
 }
 
+// Rename / update a single location (PATCH /api/locations/[id]).
+// The owner renames a box code (e.g. "27" → "27A"). Caller shows its own
+// success toast since the new name is part of the context.
+export function useUpdateLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body: { code: string; rack?: string; row?: number; box?: number };
+    }) =>
+      jfetch<{ location: Location }>(`/api/locations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["locations"] });
+    },
+  });
+}
+
+// Bulk-delete EMPTY locations only (DELETE /api/locations/bulk).
+// Returns { deleted, skipped } so the caller can report which occupied
+// boxes were protected. Products are never deleted by this endpoint.
+export function useBulkDeleteLocations() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) =>
+      jfetch<{
+        deleted: number;
+        skipped: { id: string; code: string; productCount: number }[];
+      }>(`/api/locations/bulk`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["locations"] });
+    },
+  });
+}
+
+// Fetch ONE location WITH its full product list (GET /api/locations/[id]).
+// Used when the owner opens a box to see what's inside. Enabled only when
+// an id is provided so it doesn't fire on mount.
+export function useLocationProducts(id: string | null) {
+  return useQuery({
+    queryKey: ["location", id],
+    queryFn: () =>
+      jfetch<{ location: Location }>(`/api/locations/${id}`),
+    enabled: !!id,
+  });
+}
+
 // ---- Movements ----
 export function useMovements(productId?: string, limit = 100) {
   const qs = new URLSearchParams();

@@ -108,10 +108,14 @@ export function ProductFormView() {
     }
   }, [isEdit, existing]);
 
-  // Available locations = empty ones + current (if editing)
+  // Available locations = empty ones + current (if editing).
+  // Uses productCount from the optimized list endpoint (count-only, no
+  // product joins). Falls back to products.length for any cached payload
+  // that still carries the old shape.
   const availableLocations = allLocations.filter((l) => {
     if (isEdit && existing?.product?.locationId === l.id) return true;
-    return !l.products || l.products.length === 0;
+    const count = l.productCount ?? l.products?.length ?? 0;
+    return count === 0;
   });
 
   // Group locations by rack for the select

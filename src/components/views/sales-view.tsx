@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   useAllProducts,
   useCustomers,
@@ -36,7 +37,13 @@ import {
 import { StockBadge } from "@/components/stock-badge";
 import { SafeImage } from "@/components/ui/safe-image";
 import { BillReceipt } from "@/components/receipt/bill-receipt";
-import { BarcodeScanner } from "@/components/barcode-scanner";
+// BarcodeScanner pulls in @zxing/browser (heavy). Lazy-load it so the
+// ZXing chunk only downloads the first time the owner opens the scanner —
+// not on every Sell-screen mount.
+const BarcodeScanner = dynamic(
+  () => import("@/components/barcode-scanner").then((m) => m.BarcodeScanner),
+  { ssr: false }
+);
 import { getPrimaryPhoto, type Product, type Sale, type Settings, type PaymentMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -65,6 +72,7 @@ import {
   TrendingUp,
   Loader2,
   ArrowLeft,
+  ArrowRight,
   IndianRupee,
   CheckCircle2,
   ShoppingBag,
@@ -1131,6 +1139,17 @@ export function SalesView() {
   const handleBarcodeDetected = (code: string) => {
     const p = findProductByCode(code);
     if (p) {
+      // Stock-overflow guard: if this product is already in the cart at
+      // its full stock quantity, don't increment again. The owner can still
+      // scan other products; this just prevents selling more than stock.
+      const existing = cart.find((i) => i.product.id === p.id);
+      if (existing && existing.qty >= p.quantity) {
+        toast.error(
+          `Sirf ${p.quantity} pieces available hain`,
+          { duration: 3500 }
+        );
+        return;
+      }
       addToCart(p);
       toast.success(`${p.name} cart me add hua`);
     } else {
@@ -1166,7 +1185,9 @@ export function SalesView() {
             const matches = matchInventory(rec, products);
             if (matches.length === 1) {
               addToCart(matches[0]);
-              toast.success(`${matches[0].name} cart me add hua (AI match)`);
+              toast.success(
+                `${matches[0].name} cart me add hua (AI match) — Scan Next ke liye wapas AI Photo Scan dabayein`
+              );
               setAiRecognizing(false);
             } else if (matches.length > 1) {
               setAiMatches(matches);
@@ -1311,7 +1332,7 @@ export function SalesView() {
   };
 
   return (
-    <div className="space-y-5 max-w-5xl mx-auto">
+    <div className="space-y-5 max-w-5xl mx-auto pb-24 lg:pb-0">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Button
@@ -1442,6 +1463,13 @@ export function SalesView() {
                   )}
                 </Button>
               </div>
+              {/* Multi-scan tip — only when cart has items, to reinforce
+                  that scanning a product again bumps its quantity. */}
+              {cart.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Tip: Scan karte rahein — har product auto-add hoga. Same product dobara scan → quantity +1.
+                </p>
+              )}
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -1879,12 +1907,17 @@ export function SalesView() {
         onNewSale={handleNewSale}
       />
 
-      {/* ---- Barcode Camera Scanner ---- */}
-      <BarcodeScanner
-        open={scanOpen}
-        onOpenChange={setScanOpen}
-        onDetected={handleBarcodeDetected}
-      />
+      {/* ---- Barcode Camera Scanner (lazy-loaded; multiScan keeps the
+           dialog open so the owner can scan product after product, then
+           tap Done) ---- */}
+      {scanOpen && (
+        <BarcodeScanner
+          open={scanOpen}
+          onOpenChange={setScanOpen}
+          onDetected={handleBarcodeDetected}
+          multiScan
+        />
+      )}
 
       {/* ---- Hidden AI photo input (camera capture on mobile) ---- */}
       <input
@@ -1952,6 +1985,46 @@ export function SalesView() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ---- Sticky mobile cart bar (visible only on small screens).
+           The desktop cart lives in the right column; on mobile it scrolls
+           away, so this fixed bar keeps the totals + Record Sale action
+           always one tap away. Tapping it (or its button) opens payment —
+           same openPayment() the desktop cart uses; no duplicate logic. */}
+      {cart.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-background/95 backdrop-blur lg:hidden">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 p-3">
+            <button
+              type="button"
+              onClick={openPayment}
+              className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              aria-label={`Open payment — ${totalItems} items, ${formatINR(subtotal)}`}
+            >
+              <span className="relative flex size-10 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-glow">
+                <ShoppingCart className="size-5" />
+                <span className="absolute -right-1 -top-1 flex min-w-[18px] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold text-white">
+                  {totalItems}
+                </span>
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[11px] text-muted-foreground">
+                  {totalItems} item{totalItems !== 1 ? "s" : ""}
+                </span>
+                <span className="block truncate text-sm font-bold">
+                  {formatINR(subtotal)}
+                </span>
+              </span>
+            </button>
+            <Button
+              onClick={openPayment}
+              className="h-11 shrink-0 rounded-xl bg-primary px-4 text-primary-foreground shadow-glow"
+            >
+              Record Sale
+              <ArrowRight className="size-4" />
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

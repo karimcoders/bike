@@ -29,11 +29,20 @@ export type Location = {
   row: number;
   box: number;
   createdAt: string;
+  // Cheap count returned by the LIST endpoint (GET /api/locations).
+  // Used by the grid to show "N products" without loading every product.
+  productCount?: number;
+  // Full product list — only present in the DETAIL response
+  // (GET /api/locations/[id]). The list endpoint does NOT include this.
   products?: {
     id: string;
     name: string;
     quantity: number;
     minStock: number;
+    brand?: string;
+    oemNumber?: string;
+    sellingPrice?: number;
+    photo?: string | null;
   }[];
 };
 

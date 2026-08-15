@@ -10,7 +10,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2, ScanLine, AlertCircle, SwitchCamera } from "lucide-react";
+import { Loader2, ScanLine, AlertCircle, SwitchCamera, CheckCircle2, Check } from "lucide-react";
 import { toast } from "sonner";
 
 // =====================================================================
@@ -27,8 +27,14 @@ import { toast } from "sonner";
 //   1. Owner taps "SCAN PRODUCT" in the Sell screen.
 //   2. This dialog opens and requests camera access (prefer rear camera).
 //   3. ZXing continuously decodes frames from the video stream.
-//   4. On first valid decode → onDetected(code) fires + dialog closes.
-//   5. If multiple cameras exist, owner can switch front/back.
+//   4. Single-scan mode (default): on first valid decode → onDetected(code)
+//      fires + dialog closes.
+//   5. Multi-scan mode (multiScan=true): on each decode → onDetected(code)
+//      fires (parent adds to cart), camera keeps running, debounce is
+//      reset after ~400ms so the SAME or NEXT barcode can be scanned again.
+//      A green "✓ Added" flash appears inside the dialog. Owner taps
+//      "Done" to close.
+//   6. If multiple cameras exist, owner can switch front/back.
 //
 // Graceful fallbacks:
 //   - No camera / permission denied → clear Hinglish message + manual
@@ -39,21 +45,41 @@ export function BarcodeScanner({
   open,
   onOpenChange,
   onDetected,
+  multiScan = false,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onDetected: (code: string) => void;
+  /** When true, the dialog stays open after each detection so the owner
+   *  can scan product after product continuously. The parent adds each
+   *  code to the cart; the owner taps "Done" to close. */
+  multiScan?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const lastDetectedRef = useRef<{ code: string; at: number } | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
 
   const [status, setStatus] = useState<"starting" | "scanning" | "error" | "denied">("starting");
   const [errorMsg, setErrorMsg] = useState("");
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [activeDeviceId, setActiveDeviceId] = useState<string | undefined>(undefined);
   const [manualCode, setManualCode] = useState("");
+  // Brief green "✓ Added: {code}" flash shown inside the dialog (multiScan
+  // mode) every time a code is detected. Auto-clears after ~1.2s.
+  const [flash, setFlash] = useState<{ code: string } | null>(null);
+
+  // Show the flash + schedule its auto-clear. Re-using a single timer ref
+  // so rapid back-to-back scans keep the banner visible.
+  const triggerFlash = useCallback((code: string) => {
+    setFlash({ code });
+    if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlash(null);
+      flashTimerRef.current = null;
+    }, 1200);
+  }, []);
 
   // ---- Start the camera + decoder ----
   const start = useCallback(async (deviceId?: string) => {
@@ -104,13 +130,16 @@ export function BarcodeScanner({
             const code = result.getText().trim();
             if (!code) return;
             // Debounce: ZXing can fire the same code several times/sec.
+            // In multiScan mode the cooldown is much shorter (400ms) so
+            // the owner can scan the same product repeatedly to bump qty,
+            // or scan a different product immediately.
             const now = Date.now();
             const last = lastDetectedRef.current;
-            if (last && last.code === code && now - last.at < 1500) {
+            const cooldown = multiScan ? 400 : 1500;
+            if (last && last.code === code && now - last.at < cooldown) {
               return;
             }
             lastDetectedRef.current = { code, at: now };
-            ctrl.stop();
             try {
               if (navigator.vibrate) navigator.vibrate(80);
               beep();
@@ -118,7 +147,18 @@ export function BarcodeScanner({
               /* ignore */
             }
             onDetected(code);
-            onOpenChange(false);
+            if (multiScan) {
+              // Keep the camera running so the owner can scan the next
+              // product. Reset the debounce shortly so the SAME code can
+              // be scanned again (e.g. 3x same product → qty 3).
+              window.setTimeout(() => {
+                lastDetectedRef.current = null;
+              }, 400);
+              triggerFlash(code);
+            } else {
+              ctrl.stop();
+              onOpenChange(false);
+            }
           }
         }
       );
@@ -139,7 +179,7 @@ export function BarcodeScanner({
         setErrorMsg(e?.message || "Camera start nahi hua. Manual entry use karein.");
       }
     }
-  }, [activeDeviceId, onDetected, onOpenChange]);
+  }, [activeDeviceId, onDetected, onOpenChange, multiScan, triggerFlash]);
 
   // ---- Auto-start when dialog opens ----
   useEffect(() => {
@@ -157,8 +197,12 @@ export function BarcodeScanner({
       } catch {
         /* ignore */
       }
+      if (flashTimerRef.current) {
+        window.clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = null;
+      }
     };
-  }, [open]);
+  }, [open, start]);
 
   const submitManual = () => {
     const code = manualCode.trim();
@@ -167,7 +211,13 @@ export function BarcodeScanner({
       return;
     }
     onDetected(code);
-    onOpenChange(false);
+    if (multiScan) {
+      // Keep dialog open; let the owner keep typing/scanning.
+      setManualCode("");
+      triggerFlash(code);
+    } else {
+      onOpenChange(false);
+    }
   };
 
   return (
@@ -178,7 +228,9 @@ export function BarcodeScanner({
             <ScanLine className="size-5 text-primary" /> Scan Product Barcode
           </DialogTitle>
           <DialogDescription className="text-xs">
-            Product ke barcode par camera point karein. Auto-detect hoga.
+            {multiScan
+              ? "Scan karte rahein — har barcode auto-add hoga. Done ho jaane par 'Done' dabayein."
+              : "Product ke barcode par camera point karein. Auto-detect hoga."}
           </DialogDescription>
         </DialogHeader>
 
@@ -190,6 +242,12 @@ export function BarcodeScanner({
             muted
             playsInline
           />
+          {multiScan && flash && (
+            <div className="pointer-events-none absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-lg">
+              <CheckCircle2 className="size-3.5" /> Added:{" "}
+              <span className="font-mono">{flash.code}</span>
+            </div>
+          )}
           {status === "scanning" && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="relative w-[70%] h-[40%] rounded-xl border-2 border-white/80 shadow-glow">
@@ -232,7 +290,7 @@ export function BarcodeScanner({
           )}
         </div>
 
-        {/* Manual entry fallback */}
+        {/* Manual entry fallback + Done (multiScan) */}
         <div className="p-4 space-y-3 border-t bg-muted/30">
           <div className="flex gap-2">
             <input
@@ -250,12 +308,22 @@ export function BarcodeScanner({
               autoFocus={status === "error" || status === "denied"}
             />
             <Button onClick={submitManual} className="h-11 rounded-xl">
-              Search
+              {multiScan ? "Add" : "Search"}
             </Button>
           </div>
-          <p className="text-[11px] text-muted-foreground text-center">
-            Camera nahi hai? Keyboard se bhi barcode daal sakte hain.
-          </p>
+          {multiScan ? (
+            <Button
+              onClick={() => onOpenChange(false)}
+              size="lg"
+              className="h-12 w-full rounded-xl bg-primary text-primary-foreground shadow-glow text-base"
+            >
+              <Check className="size-5" /> Done
+            </Button>
+          ) : (
+            <p className="text-[11px] text-muted-foreground text-center">
+              Camera nahi hai? Keyboard se bhi barcode daal sakte hain.
+            </p>
+          )}
         </div>
       </DialogContent>
     </Dialog>
