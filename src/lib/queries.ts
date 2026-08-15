@@ -264,6 +264,32 @@ export function useCreateLocation() {
   });
 }
 
+// Bulk-create N simple box locations (or per-rack locations) via
+// POST /api/locations/bulk. The mutation just fires the request and
+// invalidates the locations query; callers are responsible for showing
+// a success toast (since the count is part of the response payload).
+export function useBulkCreateLocations() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      count: number;
+      mode?: "simple" | "rack";
+      racks?: { name: string; count: number }[];
+    }) =>
+      jfetch<{
+        success: boolean;
+        data: { created: number; skipped: number; total: number };
+      }>(`/api/locations/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["locations"] });
+    },
+  });
+}
+
 export function useDeleteLocation() {
   const qc = useQueryClient();
   return useMutation({

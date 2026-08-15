@@ -325,6 +325,25 @@ export function getBikeModels(p: { bikeModels: string }): string[] {
     : [];
 }
 
+// ---- Location display helper ----
+// Location codes come in two flavours:
+//   1. Simple box mode (auto-generated via /api/locations/bulk):
+//      code is a plain number string like "1", "27", "100".
+//      We render these as "Box #27" for clarity — the raw "27" alone
+//      looks ambiguous next to product quantities/OEM numbers.
+//   2. Rack-style codes (manually created via Add Box dialog):
+//      code looks like "A-1-04" or "B-2-12". These are already
+//      meaningful, so we render them as-is.
+//
+// Use this anywhere a location chip/label is shown to the user
+// (product cards, find-part results, stock-in/out detail, receipts).
+export function displayLocation(code: string | null | undefined): string {
+  if (!code) return "";
+  // Purely numeric → simple box mode
+  if (/^\d+$/.test(code)) return `Box #${code}`;
+  return code;
+}
+
 // ---- Multi-image helpers ----
 // The Product.photo field stores one or more image URLs as a comma-separated
 // string (e.g. "/uploads/products/a.png,/uploads/products/b.png"). This keeps

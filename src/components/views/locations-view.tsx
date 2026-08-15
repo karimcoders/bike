@@ -1,7 +1,11 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
-import { useLocations, useCreateLocation } from "@/lib/queries";
+import {
+  useLocations,
+  useCreateLocation,
+  useBulkCreateLocations,
+} from "@/lib/queries";
 import { useUI } from "@/lib/store";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -20,7 +25,10 @@ import {
 import {
   Plus,
   ArrowLeft,
+  Zap,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getStockStatus } from "@/lib/types";
 
@@ -87,7 +95,10 @@ export function LocationsView() {
             </p>
           </div>
         </div>
-        <AddLocationButton />
+        <div className="flex items-center gap-2">
+          <BulkGenerateButton />
+          <AddLocationButton />
+        </div>
       </div>
 
       {/* Legend */}
@@ -225,6 +236,116 @@ function RackCard({
           })}
       </CardContent>
     </Card>
+  );
+}
+
+function BulkGenerateButton() {
+  const bulk = useBulkCreateLocations();
+  const [open, setOpen] = useState(false);
+  const [count, setCount] = useState("100");
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const n = Number(count);
+    if (!Number.isInteger(n) || n < 1 || n > 1000) {
+      toast.error("1 se 1000 ke beech number daalo");
+      return;
+    }
+    bulk.mutate(
+      { count: n, mode: "simple" },
+      {
+        onSuccess: (res) => {
+          const d = res?.data;
+          if (d) {
+            toast.success(
+              `${d.created} boxes create ho gaye!${
+                d.skipped > 0 ? ` (${d.skipped} pehle se the)` : ""
+              }`
+            );
+          } else {
+            toast.success("Boxes create ho gaye!");
+          }
+          setOpen(false);
+          setCount("100");
+        },
+        onError: (e: any) => {
+          toast.error(e?.message || "Boxes create nahi ho sake");
+        },
+      }
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          variant="outline"
+          size="lg"
+          className="h-11 rounded-xl border-primary/40 text-primary hover:bg-primary/10"
+        >
+          <Zap className="size-5" /> Auto-Create Boxes
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Location Boxes Banayein</DialogTitle>
+          <DialogDescription>
+            Aapke shop ke saare storage boxes ek baar me ban jaayenge. Box
+            number 1 se N tak milenge.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <Label htmlFor="bulk-count">
+              Aapke shop me kitne storage boxes hain?
+            </Label>
+            <Input
+              id="bulk-count"
+              type="number"
+              min={1}
+              max={1000}
+              value={count}
+              onChange={(e) => setCount(e.target.value)}
+              placeholder="100"
+              className="mt-1 h-12 rounded-xl text-lg font-semibold"
+              autoFocus
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Example: daalo <span className="font-semibold">100</span> → boxes
+              <span className="font-mono"> 1</span> se
+              <span className="font-mono"> 100</span> tak ban jaayenge (rack =
+              BOX).
+            </p>
+          </div>
+          <div className="rounded-xl bg-muted p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">Idempotent hai</p>
+            <p className="mt-0.5">
+              Agar kuch boxes pehle se ban rakhe hain to wo skip ho jaayenge —
+              dobara se dabaane se koi issue nahi.
+            </p>
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" className="rounded-xl">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              type="submit"
+              className="rounded-xl"
+              disabled={bulk.isPending}
+            >
+              {bulk.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Zap className="size-4" />
+              )}
+              Create
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

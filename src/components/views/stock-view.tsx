@@ -20,6 +20,7 @@ import {
   type Product,
   type OCRResult,
   type OCRItem,
+  displayLocation,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -574,7 +575,7 @@ export function StockView({ direction }: { direction: "in" | "out" }) {
                       <p className="text-sm font-bold">{p.quantity}</p>
                       {p.location && (
                         <p className="text-[11px] text-primary font-mono">
-                          {p.location.code}
+                          {displayLocation(p.location.code)}
                         </p>
                       )}
                     </div>
@@ -611,7 +612,7 @@ export function StockView({ direction }: { direction: "in" | "out" }) {
                   {selected.location && (
                     <span className="inline-flex items-center gap-1 text-[11px] text-primary font-medium">
                       <MapPin className="size-3" />
-                      {selected.location.code}
+                      {displayLocation(selected.location.code)}
                     </span>
                   )}
                 </div>

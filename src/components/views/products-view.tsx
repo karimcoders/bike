@@ -18,6 +18,7 @@ import {
   getBikeModels,
   getStockStatus,
   getPrimaryPhoto,
+  displayLocation,
   type Product,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -694,7 +695,7 @@ function ProductCard({
                 )}
               >
                 <MapPin className="size-3" />
-                {product.location.code}
+                {displayLocation(product.location.code)}
               </button>
             ) : (
               <span className="text-[11px] text-muted-foreground">
@@ -702,6 +703,12 @@ function ProductCard({
               </span>
             )}
           </div>
+          {/* Price row — keeps "Find Part" results useful at a glance */}
+          {product.sellingPrice > 0 && (
+            <p className="mt-1.5 text-sm font-bold text-foreground">
+              ₹{product.sellingPrice.toLocaleString("en-IN")}
+            </p>
+          )}
         </CardContent>
       </div>
     </Card>

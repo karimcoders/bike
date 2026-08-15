@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { SafeImage } from "@/components/ui/safe-image";
 import { StockBadge } from "@/components/stock-badge";
 import {
-  LayoutDashboard,
+  Home,
   Package,
   Tags,
   Grid3x3,
@@ -28,31 +28,60 @@ import {
   ShoppingCart,
   Users,
   Power,
+  ChevronDown,
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { getPrimaryPhoto, getStockStatus, type View, type Product } from "@/lib/types";
 
-const NAV: {
+// =====================================================================
+// NAVIGATION — grouped & simplified
+// ---------------------------------------------------------------------
+// Previously 13 flat items (too many for a rural shop owner to scan).
+// Now 7 primary entries with expandable groups (Inventory, Reports).
+// The "ShopMitra AI" entry was removed from the sidebar — it now lives
+// as a floating button (bottom-right) so it's always one tap away.
+// =====================================================================
+
+type NavLeaf = {
   view: View;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  adminOnly?: boolean;
-  badge?: string;
-}[] = [
-  { view: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { view: "ai-assistant", label: "ShopMitra AI", icon: Bot, badge: "AI" },
-  { view: "ai-insights", label: "AI Insights", icon: Sparkles, badge: "AI" },
-  { view: "products", label: "Products", icon: Package },
-  { view: "sales", label: "Sell / Billing", icon: ShoppingCart },
-  { view: "customers", label: "Customers / Udhaar", icon: Users },
-  { view: "stock-in", label: "Stock In", icon: ArrowDownToLine },
-  { view: "stock-out", label: "Stock Out", icon: ArrowUpFromLine },
-  { view: "categories", label: "Categories", icon: Tags },
-  { view: "locations", label: "Locations", icon: Grid3x3 },
-  { view: "reports", label: "Reports", icon: BarChart3 },
-  { view: "close-shop", label: "Close Shop", icon: Power, badge: "AI" },
+};
+
+type NavGroup = {
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  children: NavLeaf[];
+};
+
+type NavEntry = NavLeaf | NavGroup;
+
+const NAV_GROUPS: NavEntry[] = [
+  { view: "dashboard", label: "Home", icon: Home },
+  {
+    label: "Inventory",
+    icon: Package,
+    children: [
+      { view: "products", label: "All Products", icon: Package },
+      { view: "stock-in", label: "Stock In", icon: ArrowDownToLine },
+      { view: "stock-out", label: "Stock Out", icon: ArrowUpFromLine },
+      { view: "categories", label: "Categories", icon: Tags },
+      { view: "locations", label: "Locations", icon: Grid3x3 },
+    ],
+  },
+  { view: "sales", label: "Sell", icon: ShoppingCart },
+  { view: "customers", label: "Customers", icon: Users },
+  {
+    label: "Reports",
+    icon: BarChart3,
+    children: [
+      { view: "reports", label: "Sales Report", icon: BarChart3 },
+      { view: "ai-insights", label: "AI Insights", icon: Sparkles },
+      { view: "close-shop", label: "Close Shop", icon: Power },
+    ],
+  },
   { view: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -368,6 +397,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: settingsData } = useSettings();
   const { theme, setTheme } = useTheme();
 
+  // ---- Expandable nav groups ----
+  // The active view's containing group is auto-expanded (derived from
+  // `view`, no effect needed). The user can manually toggle any group;
+  // their override is stored in `groupOverrides` and takes precedence
+  // over the default. This avoids calling setState inside an effect
+  // (which would trigger cascading renders per the React hooks lint rule).
+  const [groupOverrides, setGroupOverrides] = useState<
+    Record<string, "open" | "closed">
+  >({});
+
+  const activeGroupLabel = useMemo(() => {
+    for (const entry of NAV_GROUPS) {
+      if ("children" in entry && entry.children.some((c) => c.view === view)) {
+        return entry.label;
+      }
+    }
+    return null;
+  }, [view]);
+
+  const isGroupExpanded = (label: string) => {
+    const override = groupOverrides[label];
+    if (override !== undefined) return override === "open";
+    return label === activeGroupLabel; // default: active group open, others closed
+  };
+
+  const toggleGroup = (label: string) => {
+    const currentlyOpen = isGroupExpanded(label);
+    setGroupOverrides((prev) => ({
+      ...prev,
+      [label]: currentlyOpen ? "closed" : "open",
+    }));
+  };
+
   const shopName = settingsData?.settings.shopName || "Bike Inventory Pro";
   const shopLogo = settingsData?.settings.logo || null;
 
@@ -404,37 +466,82 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </div>
 
-      {/* Nav */}
+      {/* Nav — grouped with expand/collapse */}
       <nav className="flex-1 overflow-y-auto scroll-thin px-3 py-4 space-y-1">
-        {NAV.map((item) => {
-          const active = view === item.view;
-          const Icon = item.icon;
+        {NAV_GROUPS.map((entry) => {
+          // ---- Group with children ----
+          if ("children" in entry) {
+            const isExpanded = isGroupExpanded(entry.label);
+            const hasActiveChild = entry.children.some(
+              (c) => c.view === view,
+            );
+            const GroupIcon = entry.icon;
+            return (
+              <div key={entry.label} className="space-y-1">
+                <button
+                  onClick={() => toggleGroup(entry.label)}
+                  aria-expanded={isExpanded}
+                  className={cn(
+                    "no-select flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all touch-target",
+                    hasActiveChild
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  )}
+                >
+                  <GroupIcon className="size-5 shrink-0" />
+                  <span className="flex-1 text-left">{entry.label}</span>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+                      isExpanded && "rotate-180",
+                    )}
+                  />
+                </button>
+                {isExpanded && (
+                  <div className="ml-4 space-y-0.5 border-l border-sidebar-border pl-2">
+                    {entry.children.map((child) => {
+                      const active = view === child.view;
+                      const ChildIcon = child.icon;
+                      return (
+                        <button
+                          key={child.view}
+                          onClick={() => go(child.view)}
+                          className={cn(
+                            "no-select flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all touch-target",
+                            active
+                              ? "bg-primary text-primary-foreground shadow-soft"
+                              : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                          )}
+                        >
+                          <ChildIcon className="size-4 shrink-0" />
+                          <span className="flex-1 text-left">
+                            {child.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          // ---- Primary leaf item (no children) ----
+          const active = view === entry.view;
+          const Icon = entry.icon;
           return (
             <button
-              key={item.view}
-              onClick={() => go(item.view)}
+              key={entry.label}
+              onClick={() => go(entry.view)}
               className={cn(
-                "no-select flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all",
-                "touch-target",
+                "no-select flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all touch-target",
                 active
                   ? "bg-primary text-primary-foreground shadow-soft"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               )}
             >
               <Icon className="size-5 shrink-0" />
-              <span className="flex-1 text-left">{item.label}</span>
-              {item.badge && (
-                <span
-                  className={cn(
-                    "rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-wide",
-                    active
-                      ? "bg-primary-foreground/20 text-primary-foreground"
-                      : "bg-primary/15 text-primary"
-                  )}
-                >
-                  {item.badge}
-                </span>
-              )}
+              <span className="flex-1 text-left">{entry.label}</span>
             </button>
           );
         })}
@@ -546,6 +653,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </p>
         </footer>
       </div>
+
+      {/* Floating ShopMitra AI chatbot button — always one tap away.
+          Hidden when the user is already on the ai-assistant view. */}
+      {view !== "ai-assistant" && (
+        <button
+          onClick={() => go("ai-assistant")}
+          aria-label="AI Assistant"
+          className="fixed bottom-4 right-4 z-50 size-14 rounded-full bg-primary text-primary-foreground shadow-glow flex items-center justify-center hover:scale-105 transition-transform"
+        >
+          <Bot className="size-6" />
+        </button>
+      )}
     </div>
   );
 }
