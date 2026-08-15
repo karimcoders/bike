@@ -145,7 +145,11 @@ export function BarcodeScanner({
   useEffect(() => {
     if (!open) return;
     lastDetectedRef.current = null;
-    setManualCode("");
+    // start() initializes the device camera (an external system) and
+    // reports its state via setStatus/setErrorMsg. This is the canonical
+    // "synchronize with an external system" effect use case — the setState
+    // calls reflect camera status, not derived React state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     start();
     return () => {
       try {
