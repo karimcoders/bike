@@ -330,10 +330,22 @@ export function getBikeModels(p: { bikeModels: string }): string[] {
 // string (e.g. "/uploads/products/a.png,/uploads/products/b.png"). This keeps
 // the schema backward-compatible with single-image entries while supporting
 // multiple images per product. These helpers split/join the field safely.
+//
+// IMPORTANT: We CANNOT just split on every comma, because data: URLs
+// (base64-encoded images saved when upload hasn't finished yet) contain a
+// comma between their MIME header and the base64 payload, e.g.
+//   data:image/png;base64,iVBORw0KGgo...
+// A naive split(",") would shatter a data URL into two bogus pieces
+// ("data:image/png;base64" + the base64 blob), causing the image to fail
+// to load. So we use a tokenizer that keeps each data URL intact.
 export function getProductPhotos(photo: string | null | undefined): string[] {
   if (!photo) return [];
-  return photo
-    .split(",")
+  // Match either:
+  //   1. A full data URL:  data:<header>,<payload>   (header & payload have no commas)
+  //   2. Any other token:  a normal path / URL with no commas
+  const tokenRegex = /data:[^,]*,[^,]*|[^,]+/g;
+  const matches = photo.match(tokenRegex) || [];
+  return matches
     .map((s) => s.trim())
     .filter(Boolean);
 }
