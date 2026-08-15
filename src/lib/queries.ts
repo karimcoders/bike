@@ -44,13 +44,17 @@ async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
     try {
       data = JSON.parse(text);
     } catch {
-      // Response is NOT valid JSON (e.g. "Server action..." HTML or text error page)
-      const snippet = text.replace(/\s+/g, " ").trim().slice(0, 180);
+      // Response is NOT valid JSON. This happens when:
+      //   - The route is missing (Next.js 404 HTML page)
+      //   - The server crashes (Next.js 500 HTML error page)
+      //   - A serverless function times out (Vercel error HTML page)
+      //   - A middleware/auth layer returns an HTML login redirect
+      // NEVER surface the raw HTML to the user — it looks like
+      // "<!DOCTYPE html><!--...-->" in a red toast, which is confusing
+      // and makes the app look broken. Show a clean message instead.
       if (!res.ok) {
-        // Show human-friendly error message instead of cryptic "Unexpected token"
         throw new Error(
-          snippet ||
-            `Server se sahi jawab nahi aaya (HTTP ${res.status}, ${ct || "no content-type"})`
+          `Server se sahi jawab nahi aaya (HTTP ${res.status}). Thodi der baad try karein.`
         );
       }
       // 2xx but not JSON — treat as empty success
@@ -60,7 +64,13 @@ async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
 
   // ---- STEP 4: Verify response.ok (2xx) — handle non-JSON content-type too.
   if (!res.ok) {
-    throw new Error(data?.error || `Request failed (HTTP ${res.status})`);
+    // Only use server-provided error field if it's a real string.
+    // Never fall back to raw response body (could be HTML).
+    const errMsg =
+      typeof data?.error === "string" && data.error.trim()
+        ? data.error
+        : `Request failed (HTTP ${res.status})`;
+    throw new Error(errMsg);
   }
 
   // ---- STEP 5: Warn in dev if response wasn't actually JSON (helps catch backend bugs)
@@ -428,12 +438,13 @@ export function useUpload() {
             try {
               data = JSON.parse(text);
             } catch {
-              // Non-JSON response (e.g. "Server action..." if route missing)
-              const snippet = text.replace(/\s+/g, " ").trim().slice(0, 180);
+              // Non-JSON response (e.g. HTML error page from Vercel on
+              // serverless timeout/crash, or a 404 HTML page if the route
+              // is missing). NEVER surface raw HTML to the user — show a
+              // clean Hinglish message instead.
               reject(
                 new Error(
-                  snippet ||
-                    `Upload failed (HTTP ${xhr.status})`
+                  `Upload fail ho gaya (HTTP ${xhr.status}). Thodi der baad try karein.`
                 )
               );
               return;
