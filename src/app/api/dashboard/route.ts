@@ -1,19 +1,11 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError } from "@/lib/api";
-import { NextResponse } from "next/server";
+import { err, handleAuthError, cachedOk } from "@/lib/api";
 
-// Cache the dashboard response in the browser for 30s (with SWR up to 5 min).
-// Authenticated + cookie-scoped, so it's safe to cache privately.
-function cachedOk(data: unknown, status = 200) {
-  return NextResponse.json(data, {
-    status,
-    headers: {
-      "Cache-Control": "private, max-age=30, stale-while-revalidate=300",
-    },
-  });
-}
-
+// GET /api/dashboard
+// Returns the shop overview (stats + lists). Uses `cachedOk` which sets
+// `Cache-Control: private, no-store` — see src/lib/api.ts for why we NEVER use
+// `max-age` / `stale-while-revalidate` on data endpoints in a multi-device shop.
 export async function GET() {
   try {
     await requireUser();

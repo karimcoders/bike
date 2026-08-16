@@ -481,10 +481,18 @@ export function useDashboard() {
       }
       return data;
     },
-    // OPTIMISTIC RENDERING: show the last-known dashboard data instantly
-    // (from localStorage) while fresh data fetches. The user sees real
-    // numbers immediately instead of a 4-second skeleton. Fresh data
-    // updates silently when it arrives (typically <1s on a warm DB).
+    // OPTIMISTIC RENDERING with SERVER-WINS guarantee:
+    // Show the last-known dashboard data instantly (from localStorage) while
+    // fresh data fetches in the background. The user sees real numbers
+    // immediately instead of a 4-second skeleton.
+    //
+    // `initialDataUpdatedAt` = the localStorage cache's timestamp. This tells
+    // React Query HOW STALE the initial data is. If the cache is older than
+    // `staleTime` (30s), the query is immediately considered stale and a
+    // background refetch fires on mount — so the server's latest data replaces
+    // the cached data within ~1s. This is what guarantees multi-device sync:
+    // even if desktop's localStorage still has yesterday's dashboard, the
+    // moment the owner opens the app, it refreshes from the live DB.
     initialData: () => {
       if (typeof window === "undefined") return undefined;
       try {
@@ -499,7 +507,19 @@ export function useDashboard() {
         return undefined;
       }
     },
+    initialDataUpdatedAt: () => {
+      if (typeof window === "undefined") return 0;
+      try {
+        const raw = localStorage.getItem("cache:dashboard");
+        if (!raw) return 0;
+        const parsed = JSON.parse(raw) as { ts: number };
+        return parsed.ts || 0;
+      } catch {
+        return 0;
+      }
+    },
     // Keep the cached data visible while refetching (no skeleton flash).
+    // 30s staleTime + initialDataUpdatedAt = old cache triggers immediate refetch.
     staleTime: 30 * 1000,
   });
 }
@@ -536,6 +556,21 @@ export function useSettings() {
         return parsed.data;
       } catch {
         return undefined;
+      }
+    },
+    // initialDataUpdatedAt = localStorage timestamp. If settings cache is older
+    // than staleTime (60s), React Query refetches on mount — so a settings
+    // change made on desktop surfaces on mobile the next time the owner opens
+    // the app (instead of showing the 1-hour-old cache).
+    initialDataUpdatedAt: () => {
+      if (typeof window === "undefined") return 0;
+      try {
+        const raw = localStorage.getItem("cache:settings");
+        if (!raw) return 0;
+        const parsed = JSON.parse(raw) as { ts: number };
+        return parsed.ts || 0;
+      } catch {
+        return 0;
       }
     },
     staleTime: 60 * 1000,

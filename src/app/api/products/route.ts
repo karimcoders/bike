@@ -1,8 +1,7 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError, ok } from "@/lib/api";
+import { err, handleAuthError, ok, cachedOk } from "@/lib/api";
 import { Prisma } from "@prisma/client";
-import { NextResponse } from "next/server";
 
 export async function GET(req: Request) {
   try {
@@ -84,17 +83,14 @@ export async function GET(req: Request) {
           : p.photo,
     }));
 
-    // Cache the product list in the browser for 30s (SWR up to 5 min).
-    // Authenticated + cookie-scoped → safe to cache privately. Saves a full
-    // DB round-trip when navigating back to the Products view.
-    return NextResponse.json(
-      { products: lightweightProducts },
-      {
-        headers: {
-          "Cache-Control": "private, max-age=30, stale-while-revalidate=300",
-        },
-      }
-    );
+    // CRITICAL: use `cachedOk` (Cache-Control: private, no-store) — NEVER
+    // `max-age` / `stale-while-revalidate`. In a multi-device shop, HTTP cache
+    // is per-browser: if desktop adds a product, mobile's cached response would
+    // keep showing the old list for `max-age` seconds → data mismatch. `no-store`
+    // forces every request to hit the production DB so both devices stay in sync.
+    // Perceived speed is preserved by React Query's in-memory cache (staleTime
+    // 30s) + localStorage optimistic initialData on the dashboard.
+    return cachedOk({ products: lightweightProducts });
   } catch (e) {
     const authErr = handleAuthError(e);
     if (authErr) return authErr;
