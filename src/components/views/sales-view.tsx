@@ -1542,6 +1542,7 @@ export function SalesView() {
                             src={getPrimaryPhoto(p.photo)}
                             alt={p.name}
                             className="size-full object-cover"
+                            size="thumb"
                             placeholder={<Package className="size-5 text-muted-foreground" />}
                           />
                         </div>
@@ -1960,6 +1961,7 @@ export function SalesView() {
                     src={getPrimaryPhoto(p.photo)}
                     alt={p.name}
                     className="size-full object-cover"
+                    size="thumb"
                     placeholder={<Package className="size-5 text-muted-foreground" />}
                   />
                 </div>

@@ -656,6 +656,7 @@ function ProductCard({
             src={getPrimaryPhoto(product.photo)}
             alt={product.name}
             className="size-full object-cover"
+            size="thumb"
             placeholder={<Package className="size-8 text-muted-foreground/40" />}
           />
         </button>

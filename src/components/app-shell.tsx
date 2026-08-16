@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useUI } from "@/lib/store";
-import { useLogout, useSettings, useAllProducts } from "@/lib/queries";
+import { useLogout, useSettings, jfetch } from "@/lib/queries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SafeImage } from "@/components/ui/safe-image";
@@ -112,7 +113,19 @@ function SearchAutocomplete({
   onPick: (id: string) => void;
   onSeeAll: () => void;
 }) {
-  const { data, isLoading } = useAllProducts();
+  // ---- LAZY product fetch ----
+  // We do NOT fetch all products on every page (that was making the dashboard
+  // needlessly trigger a full /api/products round-trip). Instead we defer the
+  // fetch until the user actually interacts with the search box — first focus
+  // or first keystroke. Once fetched, TanStack Query caches it for 2 minutes
+  // (staleTime) so subsequent focuses are instant.
+  const [hasInteracted, setHasInteracted] = useState(false);
+  const { data, isLoading } = useQuery({
+    queryKey: ["products", "all"],
+    queryFn: () => jfetch<{ products: Product[] }>(`/api/products`),
+    enabled: hasInteracted,
+    staleTime: 2 * 60 * 1000,
+  });
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -194,9 +207,13 @@ function SearchAutocomplete({
         value={search}
         onChange={(e) => {
           onSearchChange(e.target.value);
+          if (!hasInteracted) setHasInteracted(true);
           setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          if (!hasInteracted) setHasInteracted(true);
+          setOpen(true);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -331,6 +348,7 @@ function SearchResultRow({
           src={photo}
           alt={product.name}
           className="size-full object-cover"
+          size="thumb"
           placeholder={<Package className="size-5 text-muted-foreground/40" />}
         />
       </div>
@@ -443,6 +461,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               src={shopLogo}
               alt={shopName}
               className="size-full object-cover"
+              size="thumb"
               placeholder={<Bike className="size-5" />}
             />
           ) : (

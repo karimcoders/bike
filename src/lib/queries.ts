@@ -25,7 +25,7 @@ import type {
   PaymentMode,
 } from "./types";
 
-async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
+export async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
 
   // ---- STEP 1: Always read body as text first — NEVER call res.json() directly.

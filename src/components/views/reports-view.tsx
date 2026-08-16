@@ -661,6 +661,7 @@ export function ReportsView() {
                       src={p.photo}
                       alt={p.name}
                       className="size-full object-cover"
+                      size="thumb"
                       placeholder={<Package className="size-4 text-muted-foreground" />}
                     />
                   </div>
