@@ -101,7 +101,10 @@ export function useLogin() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }),
+    // Set the user data directly from the login response instead of
+    // invalidating + refetching /api/auth/me. This eliminates a duplicate
+    // network call (~1s on Vercel cold start) and makes login feel instant.
+    onSuccess: (data) => qc.setQueryData(["me"], data),
   });
 }
 
