@@ -37,17 +37,58 @@ export async function GET(req: Request) {
       where,
       orderBy: { updatedAt: "desc" },
       take: limit,
-      include: {
-        category: true,
-        location: true,
+      // CRITICAL: use `select` (NOT `include`) to control exactly which
+      // fields are returned. We EXCLUDE `notes` (can be long) and
+      // transform `photo`: if it contains base64 data URLs (legacy
+      // products), replace with a flag so the list response stays small.
+      // The full photo URL is fetched on demand by the product detail page.
+      // This prevents a 37-product list from returning 17MB of base64.
+      select: {
+        id: true,
+        name: true,
+        bikeModels: true,
+        brand: true,
+        oemNumber: true,
+        categoryId: true,
+        locationId: true,
+        purchasePrice: true,
+        sellingPrice: true,
+        quantity: true,
+        minStock: true,
+        supplier: true,
+        photo: true,
+        barcode: true,
+        lastSoldAt: true,
+        createdAt: true,
+        updatedAt: true,
+        category: { select: { id: true, name: true } },
+        location: { select: { id: true, code: true, rack: true, row: true, box: true } },
       },
     });
+
+    // ---- Strip base64 data URLs from the photo field ----
+    // Legacy products store photos as base64 data URLs (4MB each!). If we
+    // return them in the list, the response balloons to 17MB+. Instead,
+    // if a product's photo contains base64, we replace it with a small
+    // marker ("BASE64") so the frontend knows a photo exists. The actual
+    // photo is shown by fetching the single product detail (which is a
+    // smaller, one-product response).
+    //
+    // After running the /api/admin/migrate-photos endpoint, no products
+    // will have base64 photos and this code becomes a no-op.
+    const lightweightProducts = products.map((p) => ({
+      ...p,
+      photo:
+        p.photo && p.photo.includes("data:")
+          ? "BASE64" // marker — frontend shows placeholder, fetches detail for real photo
+          : p.photo,
+    }));
 
     // Cache the product list in the browser for 30s (SWR up to 5 min).
     // Authenticated + cookie-scoped → safe to cache privately. Saves a full
     // DB round-trip when navigating back to the Products view.
     return NextResponse.json(
-      { products },
+      { products: lightweightProducts },
       {
         headers: {
           "Cache-Control": "private, max-age=30, stale-while-revalidate=300",

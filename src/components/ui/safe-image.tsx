@@ -131,7 +131,9 @@ export function SafeImage({
   ...imgProps
 }: SafeImageProps) {
   // No src → placeholder immediately (no inner component needed)
-  if (!src) {
+  // Also treat "BASE64" marker (legacy products with base64 photos that
+  // were stripped from list responses) as no-src → show placeholder.
+  if (!src || src === "BASE64") {
     return (
       <div className={placeholderClassName} aria-label={alt}>
         {placeholder ?? null}

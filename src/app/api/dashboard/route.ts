@@ -49,9 +49,21 @@ export async function GET() {
       db.location.count(),
 
       // Display lists (capped, with joins)
+      // CRITICAL: use `select` (NOT `include`) to EXCLUDE the `photo` field.
+      // Old products store base64 data URLs in `photo` (4MB each!). Returning
+      // them here made the dashboard response 16MB → 8 second load times.
+      // The dashboard does NOT render product photos in these lists — it only
+      // shows names, brands, stock, and prices. Photos are fetched on demand
+      // by the Products view / Product detail page.
       db.product.findMany({
         where: { quantity: { lte: 0 } },
-        include: { category: true, location: true },
+        select: {
+          id: true, name: true, brand: true, oemNumber: true,
+          quantity: true, minStock: true, sellingPrice: true,
+          categoryId: true, locationId: true,
+          category: { select: { name: true } },
+          location: { select: { code: true } },
+        },
         take: 50,
         orderBy: { updatedAt: "desc" },
       }),
@@ -61,7 +73,14 @@ export async function GET() {
         take: 50,
       }),
       db.product.findMany({
-        include: { category: true, location: true },
+        select: {
+          id: true, name: true, brand: true, oemNumber: true,
+          quantity: true, sellingPrice: true,
+          createdAt: true, updatedAt: true,
+          categoryId: true, locationId: true,
+          category: { select: { name: true } },
+          location: { select: { code: true } },
+        },
         orderBy: { createdAt: "desc" },
         take: 5,
       }),
