@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError, cachedOk } from "@/lib/api";
+import { ok, err, handleAuthError, cachedOk } from "@/lib/api";
 
 export async function GET() {
   try {
