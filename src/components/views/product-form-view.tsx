@@ -108,15 +108,11 @@ export function ProductFormView() {
     }
   }, [isEdit, existing]);
 
-  // Available locations = empty ones + current (if editing).
-  // Uses productCount from the optimized list endpoint (count-only, no
-  // product joins). Falls back to products.length for any cached payload
-  // that still carries the old shape.
-  const availableLocations = allLocations.filter((l) => {
-    if (isEdit && existing?.product?.locationId === l.id) return true;
-    const count = l.productCount ?? l.products?.length ?? 0;
-    return count === 0;
-  });
+  // ALL locations are selectable — a box/rack can hold MULTIPLE products
+  // (bike parts shop). We show the productCount as INFO next to each option
+  // so the owner knows what's already inside, but we never disable a box
+  // just because it has products in it.
+  const availableLocations = allLocations;
 
   // Group locations by rack for the select
   const locationGroups = availableLocations.reduce<Record<string, typeof allLocations>>(
@@ -661,14 +657,22 @@ export function ProductFormView() {
                   <optgroup key={rack} label={`Rack ${rack}`}>
                     {locationGroups[rack]
                       .sort((a, b) => a.row - b.row || a.box - b.box)
-                      .map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.code} (R{l.row}-B{l.box})
-                        </option>
-                      ))}
+                      .map((l) => {
+                        const cnt = l.productCount ?? 0;
+                        return (
+                          <option key={l.id} value={l.id}>
+                            {l.code} (R{l.row}-B{l.box})
+                            {cnt > 0 ? ` — ${cnt} product${cnt > 1 ? "s" : ""} inside` : " — empty"}
+                          </option>
+                        );
+                      })}
                   </optgroup>
                 ))}
             </select>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              💡 Ek box me multiple products rakh sakte hain. Count sirf jankari
+              ke liye hai — box select nahi hata.
+            </p>
           </CardContent>
         </Card>
 

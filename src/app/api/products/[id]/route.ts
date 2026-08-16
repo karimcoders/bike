@@ -43,13 +43,9 @@ export async function PUT(
     const existing = await db.product.findUnique({ where: { id } });
     if (!existing) return err("Product not found", 404);
 
-    // Check location conflict if changing
-    if (body.locationId && body.locationId !== existing.locationId) {
-      const taken = await db.product.findFirst({
-        where: { locationId: body.locationId, NOT: { id } },
-      });
-      if (taken) return err("That location box is already occupied");
-    }
+    // NOTE: A location box can hold MULTIPLE products. We do NOT block moving
+    // a product to a box that already contains other products. The DB no longer
+    // enforces a unique constraint on Product.locationId.
 
     const data: Record<string, unknown> = {};
     const fields = [

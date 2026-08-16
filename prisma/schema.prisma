@@ -51,7 +51,7 @@ model Product {
   oemNumber     String     @default("")
   categoryId    String?
   category      Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  locationId    String?    @unique
+  locationId    String?    // NOT unique — a box/rack can hold MULTIPLE products
   location      Location?  @relation(fields: [locationId], references: [id], onDelete: SetNull)
   purchasePrice Float      @default(0)
   sellingPrice  Float      @default(0)

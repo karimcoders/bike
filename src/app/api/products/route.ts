@@ -127,13 +127,9 @@ export async function POST(req: Request) {
 
     if (!name || !name.trim()) return err("Product name is required");
 
-    // Validate location not already taken (locationId is unique)
-    if (locationId) {
-      const taken = await db.product.findFirst({
-        where: { locationId },
-      });
-      if (taken) return err("That location box is already occupied");
-    }
+    // NOTE: A location box can hold MULTIPLE products (bike parts shop).
+    // We deliberately do NOT check for an existing product at this locationId.
+    // The DB no longer enforces a unique constraint on Product.locationId.
 
     const product = await db.product.create({
       data: {
