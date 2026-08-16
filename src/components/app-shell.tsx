@@ -415,6 +415,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: settingsData } = useSettings();
   const { theme, setTheme } = useTheme();
 
+  // ---- Neon DB keep-warm ----
+  // Neon (free tier) auto-suspends the database after 5 min of inactivity.
+  // The first query after suspension takes 2-5s, making the app feel slow.
+  // While the shop app is open, we ping /api/keep-warm every 3 minutes to
+  // reset Neon's idle timer. The endpoint runs `SELECT 1` (cheapest possible
+  // query) and uses cookie-only auth (no DB call for the auth check itself).
+  // This is invisible to the user — no UI feedback, no network waterfall on
+  // the critical path. It only fires when the tab is visible (not hidden).
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const ping = () => {
+      if (document.visibilityState === "visible") {
+        fetch("/api/keep-warm", { cache: "no-store" }).catch(() => {});
+      }
+    };
+    // Start the interval 3 min after the app opens (don't fire immediately —
+    // the initial API calls already wake the DB).
+    timer = setInterval(ping, 3 * 60 * 1000);
+    // Also ping when the tab regains focus (user switched away and came back).
+    const onVisible = () => {
+      if (document.visibilityState === "visible") ping();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   // ---- Expandable nav groups ----
   // The active view's containing group is auto-expanded (derived from
   // `view`, no effect needed). The user can manually toggle any group;

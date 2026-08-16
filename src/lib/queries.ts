@@ -427,7 +427,45 @@ export function useStockOut() {
 export function useDashboard() {
   return useQuery({
     queryKey: ["dashboard"],
-    queryFn: () => jfetch<DashboardData>(`/api/dashboard`),
+    queryFn: async () => {
+      const data = await jfetch<DashboardData>(`/api/dashboard`);
+      // Persist to localStorage for INSTANT next-load rendering.
+      // On the next page load, useDashboard reads this cache as initialData
+      // so the dashboard renders immediately (no skeleton) while fresh data
+      // fetches in the background. This is the single biggest perceived-
+      // speed win for repeat visits: 4s cold dashboard → instant render.
+      try {
+        if (typeof window !== "undefined") {
+          localStorage.setItem(
+            "cache:dashboard",
+            JSON.stringify({ ts: Date.now(), data })
+          );
+        }
+      } catch {
+        // localStorage may be full or disabled — ignore.
+      }
+      return data;
+    },
+    // OPTIMISTIC RENDERING: show the last-known dashboard data instantly
+    // (from localStorage) while fresh data fetches. The user sees real
+    // numbers immediately instead of a 4-second skeleton. Fresh data
+    // updates silently when it arrives (typically <1s on a warm DB).
+    initialData: () => {
+      if (typeof window === "undefined") return undefined;
+      try {
+        const raw = localStorage.getItem("cache:dashboard");
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as { ts: number; data: DashboardData };
+        // Only use cache < 10 min old (stale data is worse than a skeleton
+        // for a shop owner checking today's sales).
+        if (Date.now() - parsed.ts > 10 * 60 * 1000) return undefined;
+        return parsed.data;
+      } catch {
+        return undefined;
+      }
+    },
+    // Keep the cached data visible while refetching (no skeleton flash).
+    staleTime: 30 * 1000,
   });
 }
 
@@ -435,7 +473,37 @@ export function useDashboard() {
 export function useSettings() {
   return useQuery({
     queryKey: ["settings"],
-    queryFn: () => jfetch<{ settings: Settings }>(`/api/settings`),
+    queryFn: async () => {
+      const data = await jfetch<{ settings: Settings }>(`/api/settings`);
+      // Cache settings in localStorage — they change rarely (shop name, logo,
+      // UPI ID, etc.) and block the app shell render. Showing the last-known
+      // settings instantly makes the header + shop name appear immediately.
+      try {
+        if (typeof window !== "undefined") {
+          localStorage.setItem(
+            "cache:settings",
+            JSON.stringify({ ts: Date.now(), data })
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return data;
+    },
+    initialData: () => {
+      if (typeof window === "undefined") return undefined;
+      try {
+        const raw = localStorage.getItem("cache:settings");
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as { ts: number; data: { settings: Settings } };
+        // Settings change rarely — cache is valid for 1 hour.
+        if (Date.now() - parsed.ts > 60 * 60 * 1000) return undefined;
+        return parsed.data;
+      } catch {
+        return undefined;
+      }
+    },
+    staleTime: 60 * 1000,
   });
 }
 
