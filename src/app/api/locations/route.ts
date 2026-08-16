@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError, ok } from "@/lib/api";
+import { err, handleAuthError, cachedOk } from "@/lib/api";
 
 // GET /api/locations — LIST endpoint.
 //
@@ -40,7 +40,7 @@ export async function GET() {
       createdAt: l.createdAt.toISOString(),
       productCount: l._count.products,
     }));
-    return ok({ locations: flat });
+    return cachedOk({ locations: flat });
   } catch (e) {
     const authErr = handleAuthError(e);
     if (authErr) return authErr;

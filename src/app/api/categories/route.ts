@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError, ok } from "@/lib/api";
+import { err, handleAuthError, ok, cachedOk } from "@/lib/api";
 
 export async function GET() {
   try {
@@ -9,7 +9,7 @@ export async function GET() {
       orderBy: { name: "asc" },
       include: { _count: { select: { products: true } } },
     });
-    return ok({ categories });
+    return cachedOk({ categories });
   } catch (e) {
     const authErr = handleAuthError(e);
     if (authErr) return authErr;

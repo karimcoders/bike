@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
-import { err, handleAuthError, ok } from "@/lib/api";
+import { err, handleAuthError, cachedOk } from "@/lib/api";
 
 export async function GET() {
   try {
@@ -13,7 +13,7 @@ export async function GET() {
     const s = settings as any;
     const aiKeySet = !!s.aiApiKey;
     const aiKeyMasked = aiKeySet ? `••••${String(s.aiApiKey).slice(-4)}` : "";
-    return ok({
+    return cachedOk({
       settings: {
         ...s,
         aiApiKey: aiKeyMasked,
