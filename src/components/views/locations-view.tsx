@@ -1,10 +1,33 @@
 "use client";
 
+// =============================================================================
+// LocationsView — SIMPLE NUMBERED BOXES ONLY
+// -----------------------------------------------------------------------------
+// The owner has N storage boxes in their shop. They enter N once (e.g. 100)
+// and the app creates Box 1, Box 2, ... Box 100. That's it. No racks, no
+// rows, no sections, no warehouses, no capacity limits.
+//
+// ONE BOX CAN HOLD MULTIPLE PRODUCTS. This is non-negotiable for a bike
+// parts shop — Box 27 might hold Brake Shoe + Clutch Cable + Oil Filter +
+// Spark Plug together. The productCount next to each box is INFORMATION
+// ONLY; it never disables the box from being selected in the product form.
+//
+// Layout:
+//   [Header: "Storage Locations" + Create Boxes button]
+//   [Search bar + bulk-select toggle]
+//   [Stats: occupied / empty / total]
+//   [Grid: Box 1 (0), Box 2 (3), Box 3 (0), ... Box N (X)  -- flat, sorted by N]
+//   [Click a box → drawer with products inside + rename + delete]
+//
+// Delete rules:
+//   - Empty box → delete allowed (with confirm)
+//   - Occupied box → delete BLOCKED, show "Box N me X products hain"
+// =============================================================================
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useBulkCreateLocations,
   useBulkDeleteLocations,
-  useCreateLocation,
   useDeleteLocation,
   useLocationProducts,
   useLocations,
@@ -17,7 +40,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sheet,
@@ -77,6 +99,24 @@ import {
   type Location,
 } from "@/lib/types";
 
+// ---- Helpers ---------------------------------------------------------------
+
+// Derive a numeric "box number" for sorting + display. The simple-mode bulk
+// create sets `code = String(N)` and `box = N`. Old rack-style codes ("A-1-04")
+// won't match the numeric regex, so we fall back to the raw `box` field and
+// finally to the code itself. This keeps old + new data sortable in one view.
+function boxNumber(l: Location): number {
+  if (/^\d+$/.test(l.code)) return Number(l.code);
+  if (typeof l.box === "number") return l.box;
+  return 0;
+}
+
+// What to show inside the tile (the big number/text).
+function boxLabel(l: Location): string {
+  if (/^\d+$/.test(l.code)) return l.code;
+  return l.code;
+}
+
 export function LocationsView() {
   const { data, isLoading } = useLocations();
   const { highlightLocationId, openProduct, go, clearHighlight } = useUI();
@@ -87,11 +127,11 @@ export function LocationsView() {
   const [search, setSearch] = useState("");
   const searchTrim = search.trim().toLowerCase();
 
-  // ---- Bulk select --------------------------------------------------------
+  // ---- Bulk select (only empty boxes can be selected for delete) ---------
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  // ---- Drawer -------------------------------------------------------------
+  // ---- Drawer (box detail) -----------------------------------------------
   const [drawerId, setDrawerId] = useState<string | null>(null);
 
   // Auto-scroll to + clear highlight after a few seconds
@@ -103,23 +143,29 @@ export function LocationsView() {
     return () => clearTimeout(t);
   }, [highlightLocationId, clearHighlight]);
 
-  // Search filter — match against box number, code, displayLocation form,
-  // and rack. "Box 27" / "box #27" / "27" all collapse to "27".
+  // Sort all boxes by their numeric N (Box 1, Box 2, ..., Box 100). Old
+  // rack-style codes get a high fallback number so they sink to the bottom
+  // of the list (the owner will eventually delete them via cleanup).
+  const sorted = useMemo(() => {
+    return [...locations].sort((a, b) => boxNumber(a) - boxNumber(b));
+  }, [locations]);
+
+  // Search filter — match against box number / displayLocation text.
+  // "Box 27" / "box #27" / "27" all collapse to "27".
   const filtered = useMemo(() => {
-    if (!searchTrim) return locations;
+    if (!searchTrim) return sorted;
     const q = searchTrim.replace(/^box\s*#?\s*/i, "").trim();
-    if (!q) return locations;
-    return locations.filter((l) => {
-      const num = String(l.box);
+    if (!q) return sorted;
+    return sorted.filter((l) => {
+      const num = String(boxNumber(l));
       const code = l.code.toLowerCase();
       return (
         num.includes(q) ||
         code.includes(q) ||
-        displayLocation(l.code).toLowerCase().includes(q) ||
-        l.rack.toLowerCase().includes(q)
+        displayLocation(l.code).toLowerCase().includes(q)
       );
     });
-  }, [locations, searchTrim]);
+  }, [sorted, searchTrim]);
 
   const isSearching = searchTrim.length > 0;
 
@@ -135,19 +181,6 @@ export function LocationsView() {
       empty: locations.length - occupied,
       total: locations.length,
     };
-  }, [locations]);
-
-  // Grouped by rack → row (non-search view). Use the full list so the grid
-  // layout stays stable while searching only changes the rendered section.
-  const racks = useMemo(() => {
-    const map: Record<string, Location[]> = {};
-    locations.forEach((l) => {
-      (map[l.rack] ||= []).push(l);
-    });
-    Object.keys(map).forEach((r) =>
-      map[r].sort((a, b) => a.row - b.row || a.box - b.box)
-    );
-    return map;
   }, [locations]);
 
   // Selection helpers
@@ -174,6 +207,9 @@ export function LocationsView() {
     [locations, drawerId]
   );
 
+  // Empty-state: no boxes exist yet. Show a prominent CTA to create N boxes.
+  const showEmptyState = !isLoading && locations.length === 0;
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -189,121 +225,125 @@ export function LocationsView() {
           </Button>
           <div>
             <h1 className="text-xl font-bold tracking-tight md:text-2xl">
-              Shop Layout
+              Storage Locations
             </h1>
             <p className="text-sm text-muted-foreground">
-              Tap any box to see what&apos;s inside
+              {locations.length === 0
+                ? "Pehle apne boxes banao (Box 1 se Box N tak)"
+                : "Tap any box to see what's inside"}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <BulkGenerateButton />
-          <AddLocationButton />
+          <CreateBoxesButton />
+          <AddSingleBoxButton />
         </div>
       </div>
 
-      {/* Search + Select toolbar */}
-      <Card className="shadow-soft">
-        <CardContent className="flex flex-wrap items-center gap-2 p-3">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Box dhoondho... (e.g. 27, Box 27, A-1)"
-              className="pl-9 pr-9 h-11 rounded-xl"
-              aria-label="Search boxes"
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted"
-                aria-label="Clear search"
-              >
-                <X className="size-4" />
-              </button>
-            )}
-          </div>
-          <Button
-            type="button"
-            variant={selectMode ? "default" : "outline"}
-            size="lg"
-            className="h-11 rounded-xl"
-            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
-          >
-            {selectMode ? (
-              <CheckSquare className="size-4" />
-            ) : (
-              <Square className="size-4" />
-            )}
-            {selectMode ? "Done" : "Select"}
-          </Button>
-          {selectMode && selectedCount > 0 && (
-            <BulkDeleteButton
-              count={selectedCount}
-              ids={Array.from(selectedIds)}
-              onDone={exitSelectMode}
-            />
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Legend / stats */}
-      <Card className="shadow-soft">
-        <CardContent className="flex flex-wrap items-center gap-4 p-3">
-          <LegendItem
-            color="bg-emerald-500"
-            label={`Occupied (${stats.occupied})`}
-          />
-          <LegendItem
-            color="bg-muted-foreground/25"
-            label={`Empty (${stats.empty})`}
-          />
-          <div className="ml-auto text-sm font-medium">
-            {stats.occupied}/{stats.total} boxes used
-          </div>
-          {isSearching && (
-            <div className="ml-2 text-xs text-muted-foreground">
-              {filtered.length} match{filtered.length === 1 ? "" : "es"}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Body */}
-      {isLoading ? (
-        <div className="space-y-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-48 rounded-2xl" />
-          ))}
-        </div>
-      ) : isSearching ? (
-        <SearchResults
-          results={filtered}
-          selectMode={selectMode}
-          selectedIds={selectedIds}
-          onToggle={toggleSelected}
-          onOpen={(id) => setDrawerId(id)}
-          highlightId={highlightLocationId}
-        />
+      {/* Empty state — no boxes yet */}
+      {showEmptyState ? (
+        <Card className="shadow-soft">
+          <CardContent className="p-8 text-center">
+            <Package className="size-12 mx-auto mb-3 text-muted-foreground/40" />
+            <p className="text-base font-semibold">Abhi koi box nahi hai</p>
+            <p className="text-sm text-muted-foreground mt-1 mb-4">
+              Aapke shop me kitne storage boxes hain? Number daalo aur sab boxes
+              ek baar me ban jaayenge.
+            </p>
+            <CreateBoxesButton large />
+          </CardContent>
+        </Card>
       ) : (
-        <div className="space-y-4">
-          {Object.keys(racks)
-            .sort()
-            .map((rack) => (
-              <RackCard
-                key={rack}
-                rack={rack}
-                locations={racks[rack]}
-                highlightId={highlightLocationId}
-                selectMode={selectMode}
-                selectedIds={selectedIds}
-                onToggle={toggleSelected}
-                onOpen={(id) => setDrawerId(id)}
+        <>
+          {/* Search + Select toolbar */}
+          <Card className="shadow-soft">
+            <CardContent className="flex flex-wrap items-center gap-2 p-3">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Box dhoondho... (e.g. 27, Box 27)"
+                  className="pl-9 pr-9 h-11 rounded-xl"
+                  aria-label="Search boxes"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted"
+                    aria-label="Clear search"
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant={selectMode ? "default" : "outline"}
+                size="lg"
+                className="h-11 rounded-xl"
+                onClick={() =>
+                  selectMode ? exitSelectMode() : setSelectMode(true)
+                }
+              >
+                {selectMode ? (
+                  <CheckSquare className="size-4" />
+                ) : (
+                  <Square className="size-4" />
+                )}
+                {selectMode ? "Done" : "Select"}
+              </Button>
+              {selectMode && selectedCount > 0 && (
+                <BulkDeleteButton
+                  count={selectedCount}
+                  ids={Array.from(selectedIds)}
+                  onDone={exitSelectMode}
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Legend / stats */}
+          <Card className="shadow-soft">
+            <CardContent className="flex flex-wrap items-center gap-4 p-3">
+              <LegendItem
+                color="bg-emerald-500"
+                label={`Occupied (${stats.occupied})`}
               />
-            ))}
-        </div>
+              <LegendItem
+                color="bg-muted-foreground/25"
+                label={`Empty (${stats.empty})`}
+              />
+              <div className="ml-auto text-sm font-medium">
+                {stats.occupied}/{stats.total} boxes used
+              </div>
+              {isSearching && (
+                <div className="ml-2 text-xs text-muted-foreground">
+                  {filtered.length} match{filtered.length === 1 ? "" : "es"}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Body — flat grid of all boxes sorted by N */}
+          {isLoading ? (
+            <div className="space-y-4">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-48 rounded-2xl" />
+              ))}
+            </div>
+          ) : (
+            <BoxGrid
+              boxes={filtered}
+              highlightId={highlightLocationId}
+              selectMode={selectMode}
+              selectedIds={selectedIds}
+              onToggle={toggleSelected}
+              onOpen={(id) => setDrawerId(id)}
+            />
+          )}
+        </>
       )}
 
       {/* Box detail drawer */}
@@ -331,71 +371,49 @@ function LegendItem({ color, label }: { color: string; label: string }) {
   );
 }
 
-// ---- Rack + Tile ----------------------------------------------------------
+// ---- Flat box grid (no rack grouping) -------------------------------------
 
-function RackCard({
-  rack,
-  locations,
+function BoxGrid({
+  boxes,
   highlightId,
   selectMode,
   selectedIds,
   onToggle,
   onOpen,
 }: {
-  rack: string;
-  locations: Location[];
+  boxes: Location[];
   highlightId: string | null;
   selectMode: boolean;
   selectedIds: Set<string>;
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
 }) {
-  // Group by row
-  const rows: Record<number, Location[]> = {};
-  locations.forEach((l) => {
-    (rows[l.row] ||= []).push(l);
-  });
-
+  if (boxes.length === 0) {
+    return (
+      <Card className="shadow-soft">
+        <CardContent className="p-8 text-center text-muted-foreground">
+          <Package className="size-10 mx-auto mb-2 opacity-30" />
+          Koi box nahi mila
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <Card className="shadow-soft">
-      <CardHeader className="flex-row items-center gap-3 pb-3">
-        <span className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold text-lg shadow-glow">
-          {rack}
-        </span>
-        <div>
-          <CardTitle className="text-base">Rack {rack}</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            {locations.length} boxes
-          </p>
+      <CardContent className="p-4">
+        <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-10 gap-2">
+          {boxes.map((l) => (
+            <BoxTile
+              key={l.id}
+              location={l}
+              highlight={highlightId === l.id}
+              selectMode={selectMode}
+              selected={selectedIds.has(l.id)}
+              onToggle={onToggle}
+              onOpen={onOpen}
+            />
+          ))}
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {Object.keys(rows)
-          .sort((a, b) => Number(a) - Number(b))
-          .map((rowKey) => {
-            const row = Number(rowKey);
-            const boxes = rows[row];
-            return (
-              <div key={rowKey} className="flex items-center gap-3">
-                <span className="w-10 shrink-0 text-xs font-semibold text-muted-foreground">
-                  R{row}
-                </span>
-                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 flex-1">
-                  {boxes.map((l) => (
-                    <BoxTile
-                      key={l.id}
-                      location={l}
-                      highlight={highlightId === l.id}
-                      selectMode={selectMode}
-                      selected={selectedIds.has(l.id)}
-                      onToggle={onToggle}
-                      onOpen={onOpen}
-                    />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
       </CardContent>
     </Card>
   );
@@ -418,7 +436,7 @@ function BoxTile({
 }) {
   const count = location.productCount ?? location.products?.length ?? 0;
   const occupied = count > 0;
-  const locked = selectMode && occupied; // occupied boxes can't be selected
+  const locked = selectMode && occupied; // occupied boxes can't be bulk-deleted
 
   const color = !occupied
     ? "bg-muted-foreground/10 border-muted-foreground/20 text-muted-foreground"
@@ -438,21 +456,22 @@ function BoxTile({
       type="button"
       onClick={handleClick}
       disabled={locked}
-      aria-label={`Box ${location.code}${
+      aria-label={`Box ${boxLabel(location)}${
         occupied ? `, ${count} products` : ", empty"
       }`}
+      title={displayLocation(location.code)}
       className={cn(
         "relative aspect-square rounded-xl border-2 p-1.5 flex flex-col items-center justify-center text-center transition-all",
         color,
-        highlight && "ring-4 ring-primary ring-offset-2 ring-offset-background scale-110",
+        highlight &&
+          "ring-4 ring-primary ring-offset-2 ring-offset-background scale-110",
         !selectMode && !locked && "hover:scale-105 hover:shadow-soft cursor-pointer",
         selectMode && !occupied && "cursor-pointer",
         selected && "ring-2 ring-primary border-primary",
         locked && "cursor-not-allowed opacity-70"
       )}
     >
-      {/* Select-mode indicator (empty boxes only) — non-interactive span
-          to avoid nesting a <button> inside a <button>. */}
+      {/* Select-mode checkbox (empty boxes only) */}
       {selectMode && !occupied && (
         <span
           className={cn(
@@ -466,7 +485,7 @@ function BoxTile({
           {selected && <Check className="size-3" />}
         </span>
       )}
-      {/* Select-mode lock badge (occupied boxes can't be deleted) */}
+      {/* Select-mode lock badge (occupied boxes can't be bulk-deleted) */}
       {selectMode && occupied && (
         <span
           className="absolute top-1 right-1 z-10 text-amber-500"
@@ -476,123 +495,17 @@ function BoxTile({
         </span>
       )}
 
-      <span className="text-[10px] font-mono font-bold leading-none">
-        {location.box}
+      <span className="text-base font-bold leading-none">
+        {boxLabel(location)}
       </span>
       {occupied ? (
-        <span className="mt-0.5 text-[8px] leading-tight font-medium">
-          {count} pc
+        <span className="mt-1 text-[10px] leading-tight font-medium">
+          {count} pc{count > 1 ? "s" : ""}
         </span>
       ) : (
-        <span className="mt-0.5 text-[8px]">empty</span>
+        <span className="mt-1 text-[9px] leading-tight">empty</span>
       )}
     </button>
-  );
-}
-
-// ---- Search results (flat list) ------------------------------------------
-
-function SearchResults({
-  results,
-  selectMode,
-  selectedIds,
-  onToggle,
-  onOpen,
-  highlightId,
-}: {
-  results: Location[];
-  selectMode: boolean;
-  selectedIds: Set<string>;
-  onToggle: (id: string) => void;
-  onOpen: (id: string) => void;
-  highlightId: string | null;
-}) {
-  if (results.length === 0) {
-    return (
-      <Card className="shadow-soft">
-        <CardContent className="p-8 text-center text-muted-foreground">
-          <Package className="size-10 mx-auto mb-2 opacity-30" />
-          Koi box nahi mila
-        </CardContent>
-      </Card>
-    );
-  }
-  return (
-    <Card className="shadow-soft">
-      <CardContent className="p-0">
-        <ScrollArea className="max-h-[60vh]">
-          <ul className="divide-y">
-            {results.map((l) => {
-              const count = l.productCount ?? l.products?.length ?? 0;
-              const occupied = count > 0;
-              const selected = selectedIds.has(l.id);
-              return (
-                <li
-                  key={l.id}
-                  id={`loc-${l.id}`}
-                  className={cn(
-                    "flex items-center gap-3 p-3",
-                    highlightId === l.id && "bg-primary/10 ring-2 ring-primary ring-inset"
-                  )}
-                >
-                  {selectMode && (
-                    <Checkbox
-                      checked={selected}
-                      disabled={occupied}
-                      onCheckedChange={() => !occupied && onToggle(l.id)}
-                      className="size-5"
-                      aria-label={`Select box ${l.code}`}
-                    />
-                  )}
-                  <span
-                    className={cn(
-                      "flex size-10 shrink-0 items-center justify-center rounded-lg border-2 font-mono font-bold text-sm",
-                      occupied
-                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-400"
-                        : "bg-muted-foreground/10 border-muted-foreground/20 text-muted-foreground"
-                    )}
-                  >
-                    {l.box}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="truncate text-sm font-semibold">
-                        {displayLocation(l.code)}
-                      </p>
-                      {occupied ? (
-                        <Badge
-                          variant="secondary"
-                          className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-                        >
-                          {count} products
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-muted-foreground">
-                          empty
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground truncate">
-                      Rack {l.rack} · Row {l.row}
-                    </p>
-                  </div>
-                  {!selectMode && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="rounded-xl shrink-0"
-                      onClick={() => onOpen(l.id)}
-                    >
-                      Open <ChevronRight className="size-4" />
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </ScrollArea>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -649,9 +562,7 @@ function BoxDetailDrawer({
               <PackageOpen className="size-5 text-primary" />
               {displayLocation(location.code)}
             </SheetTitle>
-            <SheetDescription>
-              Rack {location.rack} · Row {location.row} · Box {location.box}
-            </SheetDescription>
+            <SheetDescription>Storage Box</SheetDescription>
             <div className="flex items-center gap-2 pt-1">
               <Badge variant={hasProducts ? "secondary" : "outline"}>
                 {hasProducts ? `${shownCount} products` : "Empty"}
@@ -683,7 +594,8 @@ function BoxDetailDrawer({
                       : s === "low"
                         ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
                         : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
-                  const label = s === "out" ? "Out" : s === "low" ? "Low" : "In";
+                  const label =
+                    s === "out" ? "Out" : s === "low" ? "Low" : "In";
                   return (
                     <li key={p.id}>
                       <button
@@ -702,7 +614,9 @@ function BoxDetailDrawer({
                             </p>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-sm font-bold">{p.quantity}</span>
+                            <span className="text-sm font-bold">
+                              {p.quantity}
+                            </span>
                             <span
                               className={cn(
                                 "rounded-md px-1.5 py-0.5 text-[10px] font-medium",
@@ -791,8 +705,6 @@ function RenameDialog({
 
   const handleOpenChange = (o: boolean) => {
     // Re-seed the input with the current code each time the dialog opens.
-    // Doing this in the open-change handler (not an effect) avoids the
-    // react-hooks/set-state-in-effect lint rule.
     if (o) setCode(location.code);
     onOpenChange(o);
   };
@@ -828,19 +740,20 @@ function RenameDialog({
         <DialogHeader>
           <DialogTitle>Box Rename Karein</DialogTitle>
           <DialogDescription>
-            Naya box naam daalo. Numerical naam &quot;Box #N&quot; dikhega.
+            Naya box number ya naam daalo. Numeric naam &quot;Box N&quot;
+            dikhega.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <Label htmlFor="rename-code">Box naam</Label>
+            <Label htmlFor="rename-code">Box naam / number</Label>
             <Input
               id="rename-code"
               value={code}
               onChange={(e) => setCode(e.target.value)}
               autoFocus
               className="mt-1 h-11 rounded-xl font-mono"
-              placeholder="e.g. 27, A-1-04"
+              placeholder="e.g. 27, 28, 100"
             />
             <p className="mt-1.5 text-xs text-muted-foreground">
               Preview:{" "}
@@ -1024,9 +937,12 @@ function BulkDeleteButton({
   );
 }
 
-// ---- Existing: bulk generate boxes (unchanged) ---------------------------
+// ---- Bulk create N numbered boxes (Box 1 ... Box N) ----------------------
+// This is the PRIMARY way the owner sets up their shop. They enter N (e.g.
+// 100) and we create Box 1 through Box 100 in one shot via the bulk API.
+// Idempotent: re-running with the same N skips boxes that already exist.
 
-function BulkGenerateButton() {
+function CreateBoxesButton({ large = false }: { large?: boolean }) {
   const bulk = useBulkCreateLocations();
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState("100");
@@ -1042,7 +958,6 @@ function BulkGenerateButton() {
       { count: n, mode: "simple" },
       {
         onSuccess: (res) => {
-          // /api/locations/bulk returns { created, skipped, total } directly
           const d = res;
           if (d) {
             toast.success(
@@ -1067,19 +982,22 @@ function BulkGenerateButton() {
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button
-          variant="outline"
+          variant={large ? "default" : "outline"}
           size="lg"
-          className="h-11 rounded-xl border-primary/40 text-primary hover:bg-primary/10"
+          className={cn(
+            "h-11 rounded-xl",
+            large ? "shadow-glow px-8" : "border-primary/40 text-primary hover:bg-primary/10"
+          )}
         >
-          <Zap className="size-5" /> Auto-Create Boxes
+          <Zap className="size-5" /> Create Boxes
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Location Boxes Banayein</DialogTitle>
+          <DialogTitle>Storage Boxes Banayein</DialogTitle>
           <DialogDescription>
-            Aapke shop ke saare storage boxes ek baar me ban jaayenge. Box
-            number 1 se N tak milenge.
+            Aapke shop ke saare storage boxes ek baar me ban jaayenge. Box 1 se
+            Box N tak milenge. Ek box me multiple products rakh sakte hain.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
@@ -1099,10 +1017,9 @@ function BulkGenerateButton() {
               autoFocus
             />
             <p className="mt-1.5 text-xs text-muted-foreground">
-              Example: daalo <span className="font-semibold">100</span> → boxes
-              <span className="font-mono"> 1</span> se
-              <span className="font-mono"> 100</span> tak ban jaayenge (rack =
-              BOX).
+              Example: daalo <span className="font-semibold">100</span> →{" "}
+              <span className="font-mono">Box 1</span> se{" "}
+              <span className="font-mono">Box 100</span> tak ban jaayenge.
             </p>
           </div>
           <div className="rounded-xl bg-muted p-3 text-xs text-muted-foreground">
@@ -1137,24 +1054,38 @@ function BulkGenerateButton() {
   );
 }
 
-// ---- Existing: single add-box (unchanged) --------------------------------
+// ---- Add a single extra box (beyond the bulk-created range) --------------
+// Useful when the owner already created Box 1..100 but later buys box #101.
+// We just create a single box with the next number (or any number the owner
+// types). Internally it re-uses the bulk endpoint with count=1 — but the
+// "simple" mode always picks numbers 1..N, which would clash with existing
+// boxes. So we use the single POST /api/locations endpoint with rack="BOX"
+// to keep the data shape consistent.
 
-function AddLocationButton() {
+function AddSingleBoxButton() {
   const create = useCreateLocation();
   const [open, setOpen] = useState(false);
-  const [rack, setRack] = useState("A");
-  const [row, setRow] = useState("1");
-  const [box, setBox] = useState("1");
-
-  const code = `${rack.toUpperCase()}-${row}-${String(box).padStart(2, "0")}`;
+  const [num, setNum] = useState("101");
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    const n = Number(num);
+    if (!Number.isInteger(n) || n < 1) {
+      toast.error("Sahi number daalo (1 se zyada)");
+      return;
+    }
     create.mutate(
-      { rack: rack.toUpperCase(), row: Number(row), box: Number(box) },
+      // Simple mode: creates code=String(N), rack="BOX", row=1, box=N.
+      // The API returns a friendly error if Box N already exists.
+      { number: n },
       {
-        onSuccess: () => setOpen(false),
-        onError: () => {},
+        onSuccess: () => {
+          toast.success(`Box ${n} add ho gaya`);
+          setOpen(false);
+        },
+        onError: (e: { message?: string }) => {
+          toast.error(e?.message || "Box add nahi hua");
+        },
       }
     );
   };
@@ -1162,51 +1093,41 @@ function AddLocationButton() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button className="h-11 rounded-xl shadow-glow" size="lg">
+        <Button
+          variant="ghost"
+          size="lg"
+          className="h-11 rounded-xl"
+          title="Ek single box add karein"
+        >
           <Plus className="size-5" /> Add Box
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add Location Box</DialogTitle>
+          <DialogTitle>Single Box Add Karein</DialogTitle>
+          <DialogDescription>
+            Ek extra box add karne ke liye number daalo. Example: agar aapke
+            paas Box 1..100 hain aur naya Box 101 chahiye, to 101 daalo.
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <Label>Rack</Label>
-              <Input
-                value={rack}
-                onChange={(e) =>
-                  setRack(e.target.value.slice(0, 2).toUpperCase())
-                }
-                className="mt-1 h-11 rounded-xl uppercase"
-                maxLength={2}
-              />
-            </div>
-            <div>
-              <Label>Row</Label>
-              <Input
-                type="number"
-                min={1}
-                value={row}
-                onChange={(e) => setRow(e.target.value)}
-                className="mt-1 h-11 rounded-xl"
-              />
-            </div>
-            <div>
-              <Label>Box</Label>
-              <Input
-                type="number"
-                min={1}
-                value={box}
-                onChange={(e) => setBox(e.target.value)}
-                className="mt-1 h-11 rounded-xl"
-              />
-            </div>
-          </div>
-          <div className="rounded-xl bg-muted p-3 text-center">
-            <p className="text-xs text-muted-foreground">Location Code</p>
-            <p className="text-lg font-bold font-mono text-primary">{code}</p>
+          <div>
+            <Label htmlFor="add-num">Box number</Label>
+            <Input
+              id="add-num"
+              type="number"
+              min={1}
+              value={num}
+              onChange={(e) => setNum(e.target.value)}
+              className="mt-1 h-11 rounded-xl font-mono"
+              autoFocus
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Preview:{" "}
+              <span className="font-semibold">
+                {displayLocation(num.trim() || "?")}
+              </span>
+            </p>
           </div>
           <DialogFooter>
             <DialogClose asChild>
@@ -1219,6 +1140,11 @@ function AddLocationButton() {
               className="rounded-xl"
               disabled={create.isPending}
             >
+              {create.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
               Add Box
             </Button>
           </DialogFooter>

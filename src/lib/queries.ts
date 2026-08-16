@@ -254,7 +254,10 @@ export function useLocations() {
 export function useCreateLocation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { rack: string; row: number; box: number }) =>
+    // Simple mode: pass { number: N } to create Box N (code=String(N),
+    // rack="BOX", row=1, box=N). Legacy mode { rack, row, box } is still
+    // supported by the API but not exposed in the UI anymore.
+    mutationFn: (body: { number: number } | { rack: string; row: number; box: number }) =>
       jfetch<{ location: Location }>("/api/locations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -262,7 +265,7 @@ export function useCreateLocation() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["locations"] });
-      toast.success("Location added");
+      toast.success("Box add ho gaya");
     },
   });
 }
@@ -359,6 +362,38 @@ export function useLocationProducts(id: string | null) {
     queryFn: () =>
       jfetch<{ location: Location }>(`/api/locations/${id}`),
     enabled: !!id,
+  });
+}
+
+// ---- Admin: wipe all business data (fresh-shop reset) ----
+// POST /api/admin/wipe-business deletes every product, customer, sale,
+// ledger, movement, location and chat message, then resets Settings to
+// factory-empty. Admin-only. Users + categories are preserved.
+export function useWipeBusiness() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      jfetch<{
+        wiped: Record<string, number>;
+        remaining: Record<string, number>;
+        settings: {
+          shopName: string;
+          ownerName: string;
+          phone: string;
+          logo: string | null;
+          upiId: string | null;
+          upiQrImage: string | null;
+        };
+        triggeredBy: { id: string; username: string; role: string };
+      }>(`/api/admin/wipe-business`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "WIPE" }),
+      }),
+    onSuccess: () => {
+      // Invalidate EVERYTHING — the whole shop is now empty.
+      qc.invalidateQueries();
+    },
   });
 }
 

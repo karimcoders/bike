@@ -9,6 +9,7 @@ import {
   useCreateStaff,
   useUpdateStaff,
   useDeleteStaff,
+  useWipeBusiness,
   fileToDataUrl,
 } from "@/lib/queries";
 import { useUI } from "@/lib/store";
@@ -1642,6 +1643,159 @@ function CountBox({ label, n }: { label: string; n: number }) {
   );
 }
 
+// ---- Full Business Data Wipe (Fresh Shop Reset) ----
+// Nuclear option: deletes EVERY product, customer, sale, ledger, movement,
+// location and chat message, and resets Settings to factory-empty. Users
+// (admin/staff logins) + Categories (system taxonomy) are preserved.
+//
+// This is the "I want a completely fresh shop" button. After tapping it
+// the owner starts from zero: 0 products, 0 customers, 0 sales, 0 boxes.
+// They then create their boxes via Locations -> Create Boxes and enter
+// real data.
+function WipeBusinessSection() {
+  const wipe = useWipeBusiness();
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  const canConfirm = confirmText.trim().toUpperCase() === "RESET";
+
+  const runWipe = () => {
+    wipe.mutate(undefined, {
+      onSuccess: (res) => {
+        const w = res?.wiped || {};
+        const total =
+          (w.products || 0) +
+          (w.customers || 0) +
+          (w.sales || 0) +
+          (w.locations || 0);
+        toast.success(
+          `Fresh shop ready! ${total} records wiped. Settings reset to empty.`,
+          { duration: 6000 }
+        );
+        setOpen(false);
+        setConfirmText("");
+        // Reload to refresh every cached query (dashboard, products, etc).
+        setTimeout(() => window.location.reload(), 1500);
+      },
+      onError: (e: { message?: string }) => {
+        toast.error(e?.message || "Wipe fail hua");
+      },
+    });
+  };
+
+  return (
+    <Card className="shadow-soft border-destructive/40">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base text-destructive">
+          <AlertTriangle className="size-4" />
+          Fresh Shop Reset (Wipe All Business Data)
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Ye option <span className="font-semibold">HAR</span> product,
+          customer, sale, ledger, movement, location aur chat message delete
+          kar dega. Settings bhi khaali ho jaayenge (no shop name, no logo, no
+          UPI). Sirf admin logins aur system categories bachenge.
+        </p>
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          ⚠ Ye action <span className="font-semibold">undo nahi</span> ho
+          sakta. Tab use karein jab aapko bilkul fresh shop chahiye.
+        </p>
+        <Button
+          variant="destructive"
+          className="w-full h-11 rounded-xl"
+          onClick={() => setOpen(true)}
+        >
+          <Trash2 className="size-4" />
+          Wipe All Data & Reset Shop
+        </Button>
+
+        <Dialog open={open} onOpenChange={(v) => !v && setOpen(false)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-destructive">
+                <AlertTriangle className="size-5" />
+                Confirm Fresh Shop Reset
+              </DialogTitle>
+              <DialogDescription>
+                Ye sab business data permanently delete kar dega. Users aur
+                categories safe rahenge.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3">
+              <div className="rounded-xl bg-destructive/5 border border-destructive/30 p-3 text-xs space-y-1">
+                <p className="font-semibold text-destructive">Delete hoga:</p>
+                <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+                  <li>Saare Products (with photos references)</li>
+                  <li>Saare Customers + Ledger</li>
+                  <li>Saari Sales + Sale Items</li>
+                  <li>Saare Stock Movements</li>
+                  <li>Saare Locations / Boxes</li>
+                  <li>AI Chat history</li>
+                  <li>Settings → empty (no shop name, logo, UPI, GST)</li>
+                </ul>
+              </div>
+              <div className="rounded-xl bg-emerald-500/5 border border-emerald-500/30 p-3 text-xs space-y-1">
+                <p className="font-semibold text-emerald-700 dark:text-emerald-400">
+                  Bachega:
+                </p>
+                <ul className="list-disc list-inside text-muted-foreground space-y-0.5">
+                  <li>Admin / Staff logins</li>
+                  <li>System Categories</li>
+                  <li>Database schema</li>
+                </ul>
+              </div>
+              <div>
+                <Label htmlFor="wipe-confirm" className="text-xs font-medium">
+                  Confirm karne ke liye type karein:{" "}
+                  <span className="font-mono font-bold">RESET</span>
+                </Label>
+                <Input
+                  id="wipe-confirm"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder="RESET"
+                  className="mt-1 h-11 rounded-xl font-mono uppercase"
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="rounded-xl"
+                onClick={() => {
+                  setOpen(false);
+                  setConfirmText("");
+                }}
+                disabled={wipe.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                className="rounded-xl"
+                onClick={runWipe}
+                disabled={!canConfirm || wipe.isPending}
+              >
+                {wipe.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Trash2 className="size-4" />
+                )}
+                {wipe.isPending ? "Wiping..." : "Wipe & Reset"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsView() {
   const { data, isLoading } = useSettings();
   const { user } = useUI();
@@ -1748,6 +1902,9 @@ export function SettingsView() {
 
       {/* 9. Demo Data Cleanup (ADMIN only) */}
       {isAdmin && <DemoCleanupSection />}
+
+      {/* 9b. Full Business Data Wipe / Fresh Shop Reset (ADMIN only) */}
+      {isAdmin && <WipeBusinessSection />}
 
       {/* 10. Account */}
       <Card className="shadow-soft">

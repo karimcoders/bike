@@ -25,9 +25,12 @@ export type Category = {
 export type Location = {
   id: string;
   code: string;
-  rack: string;
-  row: number;
-  box: number;
+  // rack/row/box are kept for backward compatibility with old data, but
+  // the simple "Box N" model doesn't use them. Marked optional so new
+  // code can ignore them entirely.
+  rack?: string;
+  row?: number;
+  box?: number;
   createdAt: string;
   // Cheap count returned by the LIST endpoint (GET /api/locations).
   // Used by the grid to show "N products" without loading every product.
@@ -348,8 +351,8 @@ export function getBikeModels(p: { bikeModels: string }): string[] {
 // (product cards, find-part results, stock-in/out detail, receipts).
 export function displayLocation(code: string | null | undefined): string {
   if (!code) return "";
-  // Purely numeric → simple box mode
-  if (/^\d+$/.test(code)) return `Box #${code}`;
+  // Purely numeric → simple box mode ("27" → "Box 27")
+  if (/^\d+$/.test(code)) return `Box ${code}`;
   return code;
 }
 

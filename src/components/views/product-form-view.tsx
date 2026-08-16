@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useProduct,
   useCreateProduct,
@@ -35,6 +35,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import {
+  displayLocation,
   getProductPhotos,
   joinPhotos,
   type AIRecognized,
@@ -89,6 +90,11 @@ export function ProductFormView() {
   useEffect(() => {
     if (isEdit && existing?.product) {
       const p = existing.product;
+      // One-time hydration of the form from server data when editing.
+      // The `isEdit && existing?.product` guard ensures this only fires
+      // when the server payload arrives, not on every render — so it's
+      // NOT a cascading-render pattern.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setForm({
         name: p.name,
         bikeModels: p.bikeModels,
@@ -108,20 +114,21 @@ export function ProductFormView() {
     }
   }, [isEdit, existing]);
 
-  // ALL locations are selectable — a box/rack can hold MULTIPLE products
-  // (bike parts shop). We show the productCount as INFO next to each option
-  // so the owner knows what's already inside, but we never disable a box
+  // ALL locations are selectable — a box can hold MULTIPLE products (bike
+  // parts shop). We show the productCount as INFO next to each option so
+  // the owner knows what's already inside, but we NEVER disable a box
   // just because it has products in it.
-  const availableLocations = allLocations;
-
-  // Group locations by rack for the select
-  const locationGroups = availableLocations.reduce<Record<string, typeof allLocations>>(
-    (acc, l) => {
-      (acc[l.rack] ||= []).push(l);
-      return acc;
-    },
-    {}
-  );
+  //
+  // SIMPLE FLAT LIST — sorted by box number (Box 1, Box 2, ... Box N).
+  // No rack/row optgroups; the location model is just numbered boxes.
+  const sortedLocations = useMemo(() => {
+    const boxNum = (l: typeof allLocations[number]) => {
+      if (l.code && /^\d+$/.test(l.code)) return Number(l.code);
+      if (typeof l.box === "number") return l.box;
+      return 0;
+    };
+    return [...allLocations].sort((a, b) => boxNum(a) - boxNum(b));
+  }, [allLocations]);
 
   const set = (k: keyof typeof form, v: string) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -641,9 +648,9 @@ export function ProductFormView() {
         {/* Location */}
         <Card className="shadow-soft">
           <CardContent className="p-4">
-            <Label className="text-sm font-medium">Location (Rack-Row-Box)</Label>
+            <Label className="text-sm font-medium">Location (Box)</Label>
             <p className="text-xs text-muted-foreground">
-              Assign a shelf box so staff can find this part instantly
+              Assign a storage box so staff can find this part instantly
             </p>
             <select
               value={form.locationId}
@@ -651,23 +658,18 @@ export function ProductFormView() {
               className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-base"
             >
               <option value="">No location assigned</option>
-              {Object.keys(locationGroups)
-                .sort()
-                .map((rack) => (
-                  <optgroup key={rack} label={`Rack ${rack}`}>
-                    {locationGroups[rack]
-                      .sort((a, b) => a.row - b.row || a.box - b.box)
-                      .map((l) => {
-                        const cnt = l.productCount ?? 0;
-                        return (
-                          <option key={l.id} value={l.id}>
-                            {l.code} (R{l.row}-B{l.box})
-                            {cnt > 0 ? ` — ${cnt} product${cnt > 1 ? "s" : ""} inside` : " — empty"}
-                          </option>
-                        );
-                      })}
-                  </optgroup>
-                ))}
+              {sortedLocations.map((l) => {
+                const cnt = l.productCount ?? 0;
+                const label = displayLocation(l.code);
+                return (
+                  <option key={l.id} value={l.id}>
+                    {label}
+                    {cnt > 0
+                      ? ` — ${cnt} product${cnt > 1 ? "s" : ""} inside`
+                      : " — empty"}
+                  </option>
+                );
+              })}
             </select>
             <p className="mt-1.5 text-[11px] text-muted-foreground">
               💡 Ek box me multiple products rakh sakte hain. Count sirf jankari

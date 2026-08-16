@@ -51,7 +51,34 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     await requireUser();
-    const { rack, row, box } = await req.json();
+    const body = await req.json();
+
+    // ---- Simple mode: { number: N } --------------------------------------
+    // The owner wants flat numbered boxes (Box 1, Box 2, ... Box N). We
+    // store code = String(N), rack = "BOX", row = 1, box = N. The code is
+    // what the UI shows via displayLocation() -> "Box N".
+    //
+    // If a box with this code already exists we return a friendly error
+    // (caller surfaces it via toast).
+    if (typeof body.number === "number" || typeof body.number === "string") {
+      const n = Number(body.number);
+      if (!Number.isInteger(n) || n < 1) {
+        return err("Sahi number daalo (1 ya usse zyada)");
+      }
+      const code = String(n);
+      const existing = await db.location.findUnique({ where: { code } });
+      if (existing) {
+        return err(`Box ${n} pehle se ban gaya hai`);
+      }
+      const location = await db.location.create({
+        data: { code, rack: "BOX", row: 1, box: n },
+      });
+      return ok({ location }, 201);
+    }
+
+    // ---- Legacy mode: { rack, row, box } ---------------------------------
+    // Kept for backward compatibility. Creates codes like "A-1-04".
+    const { rack, row, box } = body;
     if (!rack || !row || !box) return err("Rack, row and box required");
     const code = `${rack}-${row}-${String(box).padStart(2, "0")}`;
     const existing = await db.location.findUnique({ where: { code } });
