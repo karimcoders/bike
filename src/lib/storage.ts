@@ -1,20 +1,26 @@
 // =====================================================================
-// STORAGE PATH UTILITY
+// STORAGE PATH UTILITY (FILE UPLOADS ONLY — NOT DATABASE)
 // ---------------------------------------------------------------------
-// Resolves where uploaded files are stored AND where the SQLite DB lives.
+// Resolves where uploaded image files are stored on disk.
+//
+// NOTE: This utility is ONLY for file uploads (product photos, receipts).
+// It has NOTHING to do with the database. The production database is a
+// single Neon PostgreSQL instance configured via DATABASE_URL in
+// src/lib/db.ts. There is no SQLite, no JSON-file DB, no per-device DB.
 //
 // - DEVELOPMENT (local / sandbox):
 //   Files → /public/uploads/<folder>/
-//   DB    → ./db/custom.db  (or wherever DATABASE_URL points)
 //
 // - RAILWAY PRODUCTION (with persistent volume mounted at /data):
 //   Files → /data/uploads/<folder>/
-//   DB    → /data/custom.db
+//
+// - VERCEL PRODUCTION:
+//   Files are NOT stored on disk — production uploads go to Cloudinary
+//   (see src/lib/cloudinary.ts). This utility is only used in local dev
+//   and on Railway/Render deployments with a persistent volume.
 //
 // Railway automatically sets RAILWAY_VOLUME_MOUNT_DIR when a volume
 // is attached. We use it to detect Railway and pick the right path.
-// This keeps the app "zero-config" — just set the env var and it
-// works on both local and Railway.
 // =====================================================================
 
 import path from "path";

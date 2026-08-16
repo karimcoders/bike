@@ -594,9 +594,12 @@ export function useDashboard() {
         const raw = localStorage.getItem("cache:dashboard");
         if (!raw) return undefined;
         const parsed = JSON.parse(raw) as { ts: number; data: DashboardData };
-        // Only use cache < 10 min old (stale data is worse than a skeleton
-        // for a shop owner checking today's sales).
-        if (Date.now() - parsed.ts > 10 * 60 * 1000) return undefined;
+        // Only use cache < 3 min old. This is a MULTI-DEVICE shop: if the
+        // owner added a sale on mobile 5 minutes ago, desktop must NOT still
+        // show yesterday's dashboard numbers from localStorage. A short TTL
+        // + initialDataUpdatedAt + refetchOnMount guarantees the live DB
+        // replaces the cache within ~1s of opening the app.
+        if (Date.now() - parsed.ts > 3 * 60 * 1000) return undefined;
         return parsed.data;
       } catch {
         return undefined;
@@ -646,8 +649,11 @@ export function useSettings() {
         const raw = localStorage.getItem("cache:settings");
         if (!raw) return undefined;
         const parsed = JSON.parse(raw) as { ts: number; data: { settings: Settings } };
-        // Settings change rarely — cache is valid for 1 hour.
-        if (Date.now() - parsed.ts > 60 * 60 * 1000) return undefined;
+        // Settings change rarely, but this is a MULTI-DEVICE shop: if the
+        // owner updates the shop name on mobile, desktop should pick it up
+        // on the next app open (not show a 1-hour-old cache). 15 min TTL +
+        // initialDataUpdatedAt + refetchOnMount = always reconciles with DB.
+        if (Date.now() - parsed.ts > 15 * 60 * 1000) return undefined;
         return parsed.data;
       } catch {
         return undefined;

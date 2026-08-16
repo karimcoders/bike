@@ -60,8 +60,8 @@ export async function POST() {
       .sort((a, b) => b.qty - a.qty)
       .slice(0, 8);
 
-    // Low stock items (quantity <= minStock) — fetch all then filter since SQLite
-    // can't compare two columns directly
+    // Low stock items (quantity <= minStock) — fetch all then filter in JS
+    // (Prisma cannot compare two columns of the same row directly in a where clause).
     const lowStockCandidates = await db.product.findMany({
       where: { quantity: { lte: 10 } },
       orderBy: { quantity: "asc" },

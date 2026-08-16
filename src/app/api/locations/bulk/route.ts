@@ -32,10 +32,9 @@ export async function POST(req: Request) {
         toCreate.push({ code, rack: "BOX", row: 1, box: i });
       }
       if (toCreate.length > 0) {
-        // We already filtered existing codes above, so a plain createMany
-        // is correct. (skipDuplicates is omitted — it is unsupported on the
-        // SQLite Prisma client used locally, though PostgreSQL supports it
-        // in production. The pre-filter makes it unnecessary either way.)
+        // We pre-filtered existing codes above, so a plain createMany is
+        // safe. (Production uses PostgreSQL via Prisma — skipDuplicates is
+        // available, but the pre-filter makes it unnecessary.)
         await db.location.createMany({ data: toCreate });
       }
       return ok(
