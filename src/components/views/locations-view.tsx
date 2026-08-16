@@ -1042,7 +1042,8 @@ function BulkGenerateButton() {
       { count: n, mode: "simple" },
       {
         onSuccess: (res) => {
-          const d = res?.data;
+          // /api/locations/bulk returns { created, skipped, total } directly
+          const d = res;
           if (d) {
             toast.success(
               `${d.created} boxes create ho gaye!${

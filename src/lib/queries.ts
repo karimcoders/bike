@@ -276,10 +276,9 @@ export function useBulkCreateLocations() {
       mode?: "simple" | "rack";
       racks?: { name: string; count: number }[];
     }) =>
-      jfetch<{
-        success: boolean;
-        data: { created: number; skipped: number; total: number };
-      }>(`/api/locations/bulk`, {
+      // NOTE: /api/locations/bulk returns { created, skipped, total }
+      // DIRECTLY via ok() — NOT wrapped in { success, data }.
+      jfetch<{ created: number; skipped: number; total: number }>(`/api/locations/bulk`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -516,8 +515,11 @@ export function useUpload() {
           `/api/cloudinary/sign?folder=${encodeURIComponent(folder)}`
         );
         if (signRes.ok) {
-          const signJson = await signRes.json();
-          const signData = signJson?.data;
+          // NOTE: /api/cloudinary/sign uses ok() which returns the object
+          // DIRECTLY (not wrapped in { data }). So we read signJson itself,
+          // not signJson.data. The previous code read signJson?.data which
+          // was always undefined → fell back to /api/upload → 404.
+          const signData = await signRes.json();
           if (signData?.configured && signData?.uploadUrl) {
             return await uploadToCloudinaryDirect(resized, signData, onProgress);
           }
@@ -528,6 +530,9 @@ export function useUpload() {
 
       // ---- Fallback: server-side upload via /api/upload ----
       // Used when Cloudinary env vars are not set (local dev / sandbox).
+      // NOTE: /api/upload route must exist for this fallback to work.
+      // On Vercel production Cloudinary IS configured, so this path is
+      // only hit in local dev without CLOUDINARY_* env vars.
       return uploadViaServer(resized, folder, onProgress);
     },
     onError: (e: any) => toast.error(e.message || "Upload fail"),
