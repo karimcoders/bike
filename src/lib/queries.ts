@@ -510,6 +510,7 @@ export function useUpload() {
       // ---- Try DIRECT browser → Cloudinary upload (signed) ----
       // Bypasses the Vercel serverless function entirely for the file
       // transfer. One hop, no serverless memory pressure, no 10s timeout.
+      let cloudinaryConfigured = false;
       try {
         const signRes = await fetch(
           `/api/cloudinary/sign?folder=${encodeURIComponent(folder)}`
@@ -521,18 +522,30 @@ export function useUpload() {
           // was always undefined → fell back to /api/upload → 404.
           const signData = await signRes.json();
           if (signData?.configured && signData?.uploadUrl) {
+            cloudinaryConfigured = true;
+            // If Cloudinary itself rejects the file (400/401/etc), surface
+            // the REAL error to the user — do NOT fall back to /api/upload
+            // (that route doesn't exist on Vercel → confusing 404).
             return await uploadToCloudinaryDirect(resized, signData, onProgress);
           }
         }
-      } catch {
-        // Sign endpoint failed — fall through to server upload.
+      } catch (e: any) {
+        // If Cloudinary was configured but the UPLOAD failed (network error,
+        // Cloudinary 400, etc), surface the real error — don't mask it with
+        // a 404 from the non-existent /api/upload fallback.
+        if (cloudinaryConfigured) {
+          throw new Error(
+            e?.message || "Cloudinary upload fail. Thodi der baad try karein."
+          );
+        }
+        // Sign endpoint itself failed (not configured / network) — fall
+        // through to server upload for local-dev backward-compat.
       }
 
       // ---- Fallback: server-side upload via /api/upload ----
-      // Used when Cloudinary env vars are not set (local dev / sandbox).
-      // NOTE: /api/upload route must exist for this fallback to work.
+      // ONLY reached when Cloudinary is NOT configured (local dev / sandbox).
       // On Vercel production Cloudinary IS configured, so this path is
-      // only hit in local dev without CLOUDINARY_* env vars.
+      // never hit in production.
       return uploadViaServer(resized, folder, onProgress);
     },
     onError: (e: any) => toast.error(e.message || "Upload fail"),
