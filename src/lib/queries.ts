@@ -190,8 +190,26 @@ export function useLogout() {
   return useMutation({
     mutationFn: () => jfetch("/api/auth/logout", { method: "POST" }),
     onSuccess: () => {
-      qc.clear();
-      qc.invalidateQueries({ queryKey: ["me"] });
+      // ---- Immediate UI transition to LoginView ----
+      // Set the ["me"] query cache to { user: null } SYNCHRONOUSLY. This makes
+      // the Home component re-render immediately (data?.user is now null) →
+      // LoginView shows WITHOUT waiting for a network refetch.
+      //
+      // The logout API has already destroyed the bip_session cookie server-side
+      // (verified in production), so even if the user reloads, /api/auth/me
+      // will return { user: null } and they'll stay on LoginView.
+      //
+      // We also clear all other queries (products, dashboard, etc.) so no stale
+      // shop data from the previous session leaks into the next login.
+      qc.setQueryData(["me"], { user: null });
+      qc.clear({ exclude: ["me"] });
+    },
+    onError: () => {
+      // Even if the logout API call fails (network error, etc.), force the UI
+      // to LoginView locally — the cookie may still be present server-side,
+      // but the user clearly wants to log out. A reload will re-evaluate.
+      qc.setQueryData(["me"], { user: null });
+      qc.clear({ exclude: ["me"] });
     },
   });
 }
