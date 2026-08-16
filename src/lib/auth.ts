@@ -64,6 +64,10 @@ export async function createSession(user: SessionUser) {
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24 * 7, // 7 days
+    // In production (Vercel HTTPS), mark the cookie as Secure so it's only
+    // sent over HTTPS. This prevents cookie theft over HTTP. Locally
+    // (http://localhost) we omit Secure so the cookie still works.
+    secure: process.env.NODE_ENV === "production",
   });
 }
 

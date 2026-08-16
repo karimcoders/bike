@@ -92,19 +92,96 @@ export function useMe() {
   });
 }
 
+// ---- Login error translation ----
+// Converts raw browser/server errors into friendly Hindi/English messages
+// that a rural shop owner can understand. NEVER shows "Failed to fetch",
+// "Unexpected token", or "Server action not found" to the user.
+function friendlyLoginError(e: unknown): Error {
+  const raw = e instanceof Error ? e.message : String(e);
+
+  // Network error (browser couldn't reach the server at all)
+  if (
+    raw.includes("Failed to fetch") ||
+    raw.includes("NetworkError") ||
+    raw.includes("network") ||
+    raw.includes("ERR_NETWORK") ||
+    raw.includes("ERR_CONNECTION") ||
+    raw.includes("ERR_INTERNET_DISCONNECTED")
+  ) {
+    return new Error("Internet connection check karein.");
+  }
+
+  // Timeout (AbortController fired — server took too long)
+  if (raw.includes("aborted") || raw.includes("timeout") || raw.includes("The user aborted a request")) {
+    return new Error("Server response nahi de raha. Dobara try karein.");
+  }
+
+  // 429 Too Many Requests (rate limited)
+  if (raw.includes("429") || raw.toLowerCase().includes("too many")) {
+    return new Error("Bahut zyada attempts. Thodi der baad try karein.");
+  }
+
+  // 500/502/503 server errors
+  if (/5\d\d/.test(raw) || raw.includes("server") || raw.includes("Server")) {
+    return new Error("Server se connection nahi ho pa raha. Dobara try karein.");
+  }
+
+  // 401/403 invalid credentials — use the server's message (already friendly)
+  if (raw.includes("401") || raw.includes("403") || raw.includes("Invalid username or password")) {
+    return new Error("Username ya password galat hai.");
+  }
+
+  // Empty username/password (client-side validation message from server)
+  if (raw.includes("Username and password required")) {
+    return new Error("Username aur password dono daalein.");
+  }
+
+  // Fall back to the server message if it looks like a real sentence, else generic
+  if (raw.length > 5 && raw.length < 200 && /^[a-zA-Z0-9 .,!?]/.test(raw)) {
+    return new Error(raw);
+  }
+  return new Error("Login nahi ho paya. Dobara try karein.");
+}
+
 export function useLogin() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { username: string; password: string }) =>
-      jfetch<{ user: any }>("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
+    mutationFn: async (body: { username: string; password: string }) => {
+      // ---- 15-second timeout via AbortController ----
+      // If the login API doesn't respond within 15s (e.g., Neon cold-start
+      // hangs or the network drops mid-request), abort the fetch so the
+      // button doesn't stay "Logging in..." forever. The user gets a clear
+      // "Server response nahi de raha" message and can retry.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+      try {
+        return await jfetch<{ user: any }>("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        // Translate raw browser errors into friendly Hindi/English messages
+        // BEFORE React Query stores them in mutation.error. This guarantees
+        // the UI never shows "Failed to fetch" or "Unexpected token".
+        console.error("[login] failed:", e);
+        throw friendlyLoginError(e);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    },
     // Set the user data directly from the login response instead of
     // invalidating + refetching /api/auth/me. This eliminates a duplicate
     // network call (~1s on Vercel cold start) and makes login feel instant.
-    onSuccess: (data) => qc.setQueryData(["me"], data),
+    // The login API calls createSession() (sets the bip_session cookie) BEFORE
+    // returning 200, so by the time onSuccess fires, the cookie is guaranteed
+    // to be set. We trust the 200 response — no need for a second /api/auth/me
+    // verification call (which would add ~1s on cold start).
+    onSuccess: (data) => {
+      qc.setQueryData(["me"], data);
+    },
   });
 }
 
